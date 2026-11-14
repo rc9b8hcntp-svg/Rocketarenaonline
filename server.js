@@ -274,8 +274,9 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ online: conns.size, rooms: rooms.size, queues: q }));
   }
   if (p === '/') p = '/index.html';
-  const f = path.join(PUB, path.normalize(p));
+  let f = path.join(PUB, path.normalize(p));
   if (f.indexOf(PUB) !== 0) { res.writeHead(403); return res.end(); }
+  if (p === '/index.html' && !fs.existsSync(f)) f = path.join(__dirname, 'index.html');   // mise à plat : index.html à côté de server.js
   fs.readFile(f, (e, d) => {
     if (e) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('Rocket Arena matchmaking server – OK (mets le jeu dans public/index.html pour le servir ici)'); }
     const ext = path.extname(f).toLowerCase();
