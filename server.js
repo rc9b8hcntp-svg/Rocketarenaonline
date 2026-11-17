@@ -10,6 +10,7 @@ const PORT = +process.env.PORT || 8080;
 const FILL_S = +process.env.FILL_SECONDS || 20;          // attente avant de compléter avec des bots (hors classé)
 const MAX_CONN = +process.env.MAX_CONNECTIONS || 1000;
 const ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean); // vide = tout le monde
+const GRACE = +process.env.GRACE_SECONDS || 20;          // après une coupure réseau, la place du joueur est gardée pendant ce délai
 const MAXMSG = 32768;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const PUB = path.join(__dirname, 'public');
@@ -24,6 +25,7 @@ const conns = new Set();
 const queues = new Map();            // "mode|size" -> [{c,mmr,since}]
 const rooms = new Set();
 const byCode = new Map();
+const ghosts = new Map();            // id -> Conn dont le socket est coupé mais dont la place (salon / match) est gardée GRACE secondes
 
 /* ---------- WebSocket minimal (RFC 6455) ---------- */
 function parseFrame(b) {
@@ -46,8 +48,12 @@ class Conn {
     this.s = sock; this.id = ++nextId; this.buf = Buffer.alloc(0); this.alive = true; this.frag = null;
     this.name = 'Joueur' + this.id; this.L = {}; this.mmr = 500; this.room = null; this.team = 0; this.qkeys = [];
     this.tokens = 400; this.tt = Date.now(); this.lastPong = Date.now();
-    sock.setNoDelay(true);
+    this.tok = crypto.randomBytes(8).toString('hex'); this.bye = false; this.ghostT = null; this.moved = false;   // tok : jeton de reprise de session
+    sock.setNoDelay(true); sock.setKeepAlive(true, 10000);
     sock.on('data', d => this.data(d));
+    /* Les sockets HTTP de Node sont en « half-open » : quand le client coupe, 'close' n'arrive pas tout de suite
+       (parfois jamais avant 60 s) et le joueur restait fantôme dans le match. 'end' = le client a coupé : on le traite tout de suite. */
+    sock.on('end', () => this.close());
     sock.on('close', () => this.close());
     sock.on('error', () => this.close());
   }
@@ -76,16 +82,28 @@ class Conn {
     if (n < 126) h = Buffer.from([128 | op, n]);
     else if (n < 65536) { h = Buffer.alloc(4); h[0] = 128 | op; h[1] = 126; h.writeUInt16BE(n, 2); }
     else { h = Buffer.alloc(10); h[0] = 128 | op; h[1] = 127; h.writeUInt32BE(0, 2); h.writeUInt32BE(n, 6); }
-    try { this.s.write(Buffer.concat([h, p])); } catch (e) { return this.kill(); }
-    if (this.s.writableLength > 1 << 20) this.kill();
+    try { this.s.write(Buffer.concat([h, p])); } catch (e) { return this.drop(); }
+    if (this.s.writableLength > 1 << 20) this.drop();
   }
   raw(str) { this.write(1, Buffer.from(str)); }
   send(o) { this.raw(JSON.stringify(o)); }
   err(m) { this.send({ t: 'err', m }); }
-  kill() { if (!this.alive) return; try { this.s.destroy(); } catch (e) {} this.close(); }
+  drop() { if (!this.alive) return; try { this.s.destroy(); } catch (e) {} this.close(); }   // connexion morte / bloquée : on garde la place GRACE secondes
+  kill() { if (!this.alive) return; this.bye = true; try { this.s.destroy(); } catch (e) {} this.close(); }
   close() {
+    if (this.ghostT || this.moved) return;
     if (!this.alive && !conns.has(this)) return;
-    this.alive = false; conns.delete(this);
+    /* coupure réseau (pas un départ volontaire, pas un kill du serveur) pendant un salon / un match :
+       on garde la place GRACE secondes, le client peut se reconnecter et reprendre exactement où il en était */
+    if (this.alive && !this.bye && this.room) {
+      this.alive = false; ghosts.set(this.id, this);
+      this.ghostT = setTimeout(() => this.fin(), GRACE * 1000);
+      return;
+    }
+    this.fin();
+  }
+  fin() {
+    this.alive = false; clearTimeout(this.ghostT); this.ghostT = null; ghosts.delete(this.id); conns.delete(this);
     unqueue(this); leaveRoom(this);
   }
   msg(str) {
@@ -172,11 +190,21 @@ function startQueueMatch(k, size, group) {
   room.host = players[0].id;
   launch(room);
 }
+function matchMsg(room, c) {
+  const slot = [0, 0], list = [];
+  for (const o of room.players.values()) list.push({ id: o.id, name: o.name, team: o.team, slot: slot[o.team]++, L: o.L, mmr: o.mmr });
+  return { t: 'match', you: c.id, host: room.host, cfg: room.cfg, players: list, priv: room.priv };
+}
 function launch(room) {
   room.state = 'play';
-  const slot = [0, 0], list = [];
-  for (const c of room.players.values()) list.push({ id: c.id, name: c.name, team: c.team, slot: slot[c.team]++, L: c.L, mmr: c.mmr });
-  for (const c of room.players.values()) c.send({ t: 'match', you: c.id, host: room.host, cfg: room.cfg, players: list, priv: room.priv });
+  for (const c of room.players.values()) c.send(matchMsg(room, c));
+}
+/* reprise de session : la nouvelle connexion c reprend la place de la connexion coupée old */
+function adopt(old, c) {
+  clearTimeout(old.ghostT); old.ghostT = null; old.moved = true; ghosts.delete(old.id); conns.delete(old);
+  c.id = old.id; c.tok = old.tok; c.room = old.room; c.team = old.team;
+  if (c.room) c.room.players.set(c.id, c);
+  old.room = null;
 }
 
 /* ---------- salons ---------- */
@@ -209,7 +237,20 @@ function handle(c, m, str) {
     return;
   }
   switch (t) {
-    case 'hello': profile(c, m); c.send({ t: 'welcome', id: c.id, on: conns.size }); break;
+    case 'hello': {
+      profile(c, m);
+      const rs = m.resume && typeof m.resume === 'object' ? m.resume : null, g = rs && ghosts.get(rs.id);
+      if (g && g.tok === rs.tok && g.room) {                  // le joueur revient après une coupure : il retrouve sa place
+        adopt(g, c);
+        c.send({ t: 'welcome', id: c.id, on: conns.size, tok: c.tok, resumed: 1 });
+        const r = c.room;
+        if (r.state === 'play' && !rs.on) c.send(matchMsg(r, c));   // le match a démarré pendant la coupure
+        else if (r.state === 'lobby') bcastRoom(r);
+        break;
+      }
+      c.send({ t: 'welcome', id: c.id, on: conns.size, tok: c.tok });
+      break;
+    }
     case 'ping': c.send({ t: 'pong', ts: m.ts }); break;
     case 'queue': {
       profile(c, m);
@@ -296,8 +337,8 @@ server.on('upgrade', (req, sock) => {
 setInterval(tickQueues, 1000);
 setInterval(() => {                                          // keep-alive + nettoyage des connexions mortes
   const now = Date.now();
-  for (const c of [...conns]) { if (now - c.lastPong > 60000) c.kill(); else c.write(9, Buffer.alloc(0)); }
-}, 20000);
+  for (const c of [...conns]) { if (now - c.lastPong > 30000) c.drop(); else c.write(9, Buffer.alloc(0)); }
+}, 10000);
 
 if (require.main === module) server.listen(PORT, () => console.log('Matchmaking Rocket Arena sur le port ' + PORT));
 module.exports = { server, tickQueues };

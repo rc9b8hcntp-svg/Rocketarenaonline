@@ -3917,6 +3917,7 @@ const GATE={on:false,
 if(window.RA_FB||window.RA_FB_ERR)CLOUD.init();else window.addEventListener('ra-fb',()=>CLOUD.init());
 /* NEWS : à CHAQUE mise à jour du jeu, on ajoute une entrée EN HAUT de cette liste (la plus récente en premier), avec sa date dans « d » */
 const NEWS=[
+  {d:'17/11/2026',t:'En ligne : fini les déconnexions',b:'La connexion au serveur reste active en permanence (salon, but, replay, pause, résultats). Et si le réseau coupe quelques secondes, le jeu te reconnecte tout seul dans ton salon ou ton match, sans te faire perdre ta place.'},
   {d:'14/11/2026',t:'Séquence de buts : balle et voiture libres',b:'Dans le créateur, en Séquence de buts, tu peux placer la balle et la voiture de départ de chaque but : sélectionne un but, choisis l\'outil Balle ou Voiture et touche la carte (ou glisse-les). Sans réglage, elles restent devant le but comme avant.',go:['maker','Ouvrir le créateur']},
   {d:'14/11/2026',t:'Entraînement libre : spawn aléatoire',b:'En Entraînement libre, ta voiture apparaît maintenant sur une des 5 positions de coup d\'envoi (comme dans Rocket League), au hasard, à chaque but marqué et à chaque reset (touche R ou « Réinitialiser le tir »). La balle reste au centre.',go:['lobby','Jouer']},
   {d:'14/11/2026',t:'Créateur : voiture libre',b:'Le nouvel outil Voiture du créateur de carte place ta voiture où tu veux au départ et choisit la direction où elle regarde (Solo, Parkour et match contre bots). Elle y revient après un reset (R).',go:['maker','Ouvrir le créateur']},
@@ -7620,7 +7621,7 @@ function frame(now){
    - Tous les clients simulent le match ; l'hôte est l'arbitre (buts, chrono, fin) et envoie des snapshots
      que les autres utilisent pour se recaler. Si l'hôte part, un autre joueur prend le relais.
    ===================================================================== */
-const MM_DEFAULT_URL=''; /* adresse WebSocket du serveur si le jeu n'est PAS servi par lui, ex. 'wss://rocket-arena.onrender.com' */
+const MM_DEFAULT_URL='wss://q8on10pg2w4o-production-w3vas31j.europe-west1.suga.run'; /* adresse WebSocket du serveur si le jeu n'est PAS servi par lui, ex. 'wss://rocket-arena.onrender.com' */
 Object.assign(NET,{
   ws:null,cp:null,id:-1,rtt:80,online:0,room:null,pend:null,qiv:0,gone:new Set(),
   lsGet(k){try{return localStorage.getItem(k)||'';}catch(e){return '';}},
@@ -7642,9 +7643,9 @@ Object.assign(NET,{
       let done=false;const fin=v=>{if(!done){done=true;NET.cp=null;res(v);}};
       let w;try{w=new WebSocket(u);}catch(e){return fin(false);}
       const to=setTimeout(()=>{try{w.close();}catch(e){}fin(false);},6000);
-      w.onopen=()=>{NET.ws=w;NET.send(Object.assign({t:'hello'},NET.prof()));};
-      w.onmessage=e=>{let m;try{m=JSON.parse(e.data);}catch(_){return;}
-        if(m.t==='welcome'){clearTimeout(to);NET.id=m.id;NET.online=m.on;fin(true);}else NET.onMsg(m);};
+      w.onopen=()=>{NET.ws=w;NET.rx=performance.now();NET.gotPong=false;NET.send(Object.assign({t:'hello'},NET.prof(),NET.tok&&NET.id>=0?{resume:{id:NET.id,tok:NET.tok,on:NET.on?1:0}}:{}));};
+      w.onmessage=e=>{NET.rx=performance.now();let m;try{m=JSON.parse(e.data);}catch(_){return;}
+        if(m.t==='welcome'){clearTimeout(to);NET.id=m.id;NET.online=m.on;NET.tok=m.tok||'';NET.resumed=!!m.resumed;fin(true);}else NET.onMsg(m);};
       w.onclose=()=>{clearTimeout(to);if(NET.ws===w){NET.ws=null;NET.dropped();}fin(false);};
       w.onerror=()=>{};
     });
@@ -7652,7 +7653,7 @@ Object.assign(NET,{
   },
   onMsg(m){
     switch(m.t){
-      case 'pong':NET.rtt=NET.rtt*.7+(performance.now()-m.ts)*.3;break;
+      case 'pong':NET.gotPong=true;NET.rtt=NET.rtt*.7+(performance.now()-m.ts)*.3;break;
       case 'q':NET.online=m.on;NET.qUpd(m);break;
       case 'match':NET.begin(m);break;
       case 'room':NET.room=m;NET.rpaint();break;
@@ -7665,13 +7666,34 @@ Object.assign(NET,{
       case 'left':NET.onLeft(m);break;
     }
   },
+  /* Connexion coupée : si on était dans un salon ou un match, on essaie de se reconnecter pendant 15 s.
+     Le serveur garde la place du joueur 20 s et la lui rend (même identité, même match) : plus de « connexion perdue » pour une micro-coupure. */
   dropped(){
+    if(NET.rcOn)return;
+    if(NET.tok&&NET.id>=0&&(NET.on||NET.room)){NET.reconnect();return;}
+    NET.hardDrop();
+  },
+  reconnect(){
+    const t0=performance.now();NET.rcOn=true;toast('Connexion instable : reconnexion…');
+    const step=async()=>{
+      if(!NET.rcOn)return;
+      if(performance.now()-t0>15000){NET.rcOn=false;NET.hardDrop();return;}
+      const ok=await NET.connect();
+      if(!NET.rcOn)return;
+      if(ok&&NET.resumed){NET.rcOn=false;toast('Reconnecté !');return;}
+      if(ok){NET.rcOn=false;NET.hardDrop();return;}          /* le serveur a déjà libéré la place (ou ne gère pas la reprise) */
+      setTimeout(step,1000);
+    };
+    step();
+  },
+  hardDrop(){
     const was=NET.on;clearInterval(NET.qiv);NET.room=null;
     if($('queue').classList.contains('show')&&!was){$('queue').classList.remove('show');toast('Connexion au serveur perdue');}
     if(was){NET.on=false;NET.kind=null;for(const c of cars)c.remote=false;toast('Connexion perdue : les bots reprennent la partie');}
     else if($('modal').classList.contains('show')&&$('mbox').querySelector('#nroom'))NET.panel();
   },
   leave(){
+    NET.rcOn=false;
     if(NET.ws)NET.send({t:'leave'});
     clearInterval(NET.qiv);NET.on=false;NET.kind=null;NET.room=null;NET.roster=null;
   },
@@ -7725,7 +7747,6 @@ Object.assign(NET,{
       if(a.length)NET.send({t:'in',a:a});
     }
     if(NET.host&&now-NET.tSn>=66){NET.tSn=now;NET.sendSnap();}
-    if(now-(NET.tPing||0)>3000){NET.tPing=now;NET.send({t:'ping',ts:now});}
   },
   sendSnap(){
     const f=v=>Math.round(v*100)/100,g=v=>Math.round(v*1000)/1000;
@@ -7871,6 +7892,16 @@ Object.assign(NET,{
   }
 });
 
+/* Battement de cœur : un ping toutes les 3 s tant que la connexion est ouverte, quelle que soit la phase
+   (file d'attente, salon, compte à rebours, but, replay, pause, résultats, onglet en arrière-plan).
+   Avant, le ping n'était envoyé qu'en pleine action : le reste du temps la connexion restait muette et le serveur / le relais
+   la coupait pour inactivité. Si le serveur ne répond plus depuis 20 s, on considère la connexion morte et on la ferme proprement. */
+setInterval(()=>{
+  const w=NET.ws;if(!w||w.readyState!==1)return;
+  const now=performance.now();
+  if(NET.gotPong&&NET.rx&&now-NET.rx>20000){NET.ws=null;try{w.close();}catch(e){}NET.gotPong=false;NET.dropped();return;}
+  NET.send({t:'ping',ts:now});
+},3000);
 cfg.ballCam=SV.set.ballCam;cfg.autoThr=SV.set.autoThr;
 {const mb=$('music');if(mb)mb.onclick=()=>{if(MUS.on){musNext();toast('♪ '+MUS.name);}};}
 wallLoad();
