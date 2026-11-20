@@ -1343,7 +1343,8 @@ function rbox(px,py,pz,cx,cy,cz,hx,hy,hz,r,o){
   }
 }
 const S={d:0,nx:0,ny:0,nz:0},S1={d:0,nx:0,ny:0,nz:0};
-let GCZ=HZ+(GD-R)/2,GHZ=(GD+R)/2;
+let GCR=3; /* rayon des angles arrondis de la cage (haut de l'ouverture + fond) */
+let GCZ=HZ+(GD-R-GCR)/2,GHZ=(GD+R+GCR)/2; /* la cage commence GCR avant la rampe : l'arrondi du devant reste dans l'arène */
 function torusD(px,py,pz,cx,cy,cz,Rc,rt,o){
   const dx=px-cx,dz=pz-cz,dy=py-cy,dl=Math.hypot(dx,dz)||1e-6;
   const qx=dl-Rc,l=Math.hypot(qx,dy)||1e-6;
@@ -1400,10 +1401,13 @@ function sdf(px,py,pz,o,forBall){
   else if(DROP.on)hexSdf(px,py,pz,o);
   else rbox(px,py,pz,0,HY,0,HX,HY,HZ,R,o);
   if(HASGOAL){
-    rbox(px,py,pz,0,GH/2,GCZ,GW,GH/2,GHZ,1,S1);
-    if(S1.d<o.d){o.d=S1.d;o.nx=S1.nx;o.ny=S1.ny;o.nz=S1.nz;}
-    rbox(px,py,pz,0,GH/2,-GCZ,GW,GH/2,GHZ,1,S1);
-    if(S1.d<o.d){o.d=S1.d;o.nx=S1.nx;o.ny=S1.ny;o.nz=S1.nz;}
+    /* cage : boîte à angles arrondis (rayon GCR) prolongée sous le sol, puis coupée par le sol plat (bas carré) */
+    const gcy=(GH-2*GCR)/2,ghy=(GH+2*GCR)/2;
+    for(let sg=1;sg>=-1;sg-=2){
+      rbox(px,py,pz,0,gcy,sg*GCZ,GW,ghy,GHZ,GCR,S1);
+      if(-py>S1.d){S1.d=-py;S1.nx=0;S1.ny=-1;S1.nz=0;}
+      if(S1.d<o.d){o.d=S1.d;o.nx=S1.nx;o.ny=S1.ny;o.nz=S1.nz;}
+    }
   }
   if(HOOP.on){
     for(let s=-1;s<=1;s+=2){
@@ -1424,7 +1428,8 @@ function axisC(h,extras){
   const o=[a[0]];for(let i=1;i<a.length;i++)if(a[i]-o[o.length-1]>1e-4)o.push(a[i]);
   return o;
 }
-function recomputeCO(){const ex=h=>{const a=[];for(let v=-Math.floor((h-1)/10)*10;v<h;v+=10)a.push(v);return a;};CO.x=axisC(HX,[-GW,GW].concat(ex(HX)));CO.y=axisC(HY,[GH-HY,0,-HY+3]);CO.z=axisC(HZ,ex(HZ));}
+function recomputeCO(){const ex=h=>{const a=[];for(let v=-Math.floor((h-1)/10)*10;v<h;v+=10)a.push(v);return a;};const gx=[-GW,GW],gy=[GH-HY,0,-HY+3];for(let k=0;k<=16;k++){const an=k/16*Math.PI/2,xx=GW-GCR+GCR*Math.cos(an);gx.push(xx,-xx);gy.push(GH-GCR+GCR*Math.sin(an)-HY);} /* quadrillage resserré sur les coins arrondis de l'ouverture */
+  CO.x=axisC(HX,gx.concat(ex(HX)));CO.y=axisC(HY,gy);CO.z=axisC(HZ,ex(HZ));}
 recomputeCO();
 
 function tintAt(z){
@@ -1484,6 +1489,11 @@ function buildArenaHex(){
   const ceilMat=new T.MeshBasicMaterial({map:TX.wall,color:0x6fa8ff,transparent:true,opacity:.16,depthWrite:false,side:T.DoubleSide});
   {const hm=new T.Mesh(g,[floorMat,wallMat,ceilMat]);hm.receiveShadow=true;arenaGroup.add(hm);}
 }
+function goalHole(x,h){ /* ouverture du but : rectangle dont les coins du haut sont arrondis (rayon GCR) */
+  const ax=Math.abs(x);if(ax>=GW||h>=GH)return false;
+  const dx=ax-(GW-GCR),dh=h-(GH-GCR);
+  return (dx>0&&dh>0)?dx*dx+dh*dh<GCR*GCR:true;
+}
 function buildArena(){
   if(DROP.on){buildArenaHex();return;}
   const P=[],N=[],Cc=[],U=[],idx=[[],[],[]],cache=new Map();
@@ -1516,7 +1526,7 @@ function buildArena(){
         if(sg<0){if(Math.abs(c.x)<GW&&Math.abs(c.z)>HZ-R)continue;m=flat?0:1;}
         else m=flat?2:1;
       }else if(an==='z'){
-        if(Math.abs(c.x)<GW&&(c.y+HY)<GH)continue;
+        if(goalHole(c.x,c.y+HY))continue;
       }
       const a=vert(i,j,m),b=vert(i+1,j,m),cc=vert(i+1,j+1,m),d=vert(i,j+1,m);
       idx[m].push(a,b,cc,a,cc,d);
@@ -1698,17 +1708,53 @@ function makeLabel(text,css){
   const sp=new T.Sprite(new T.SpriteMaterial({map:labelTex(text,css),transparent:true,depthTest:false,depthWrite:false}));
   sp.scale.set(5.5,1.4,1);sp.renderOrder=10;return sp;
 }
+/* profil de la cage (x,y) à l'inset d : côtés droits, coins du haut arrondis, ouvert en bas */
+function goalProfile(W,H,r,d,M){
+  const xs=W-d,rc=Math.max(r-d,1e-4),cy=H-r,pts=[[-xs,0]];
+  for(let k=0;k<=M;k++){const a=Math.PI-k/M*Math.PI/2;pts.push([-(W-r)+rc*Math.cos(a),cy+rc*Math.sin(a)]);}
+  for(let k=0;k<=M;k++){const a=Math.PI/2-k/M*Math.PI/2;pts.push([(W-r)+rc*Math.cos(a),cy+rc*Math.sin(a)]);}
+  pts.push([xs,0]);return pts;
+}
+/* filet de la cage : tunnel à coins arrondis, fond arrondi (même forme que la physique) */
+function goalNetGeo(s,W,H,D,r){
+  const M=12,S=8,rings=[]; /* rings : {pts,z,v} */
+  rings.push({d:0,z:0,v:0});rings.push({d:0,z:D-r,v:D-r});
+  for(let j=1;j<=S;j++){const th=j/S*Math.PI/2;rings.push({d:r*(1-Math.cos(th)),z:D-r+r*Math.sin(th),v:D-r+r*th});}
+  const P=[],U=[],I=[];let n=0;
+  rings.forEach(R=>{
+    const pr=goalProfile(W,H,r,R.d,M);let acc=0;n=pr.length;
+    pr.forEach((q,k)=>{if(k)acc+=Math.hypot(q[0]-pr[k-1][0],q[1]-pr[k-1][1]);P.push(q[0],q[1],s*(HZ+R.z));U.push(acc/2,R.v/2);});
+  });
+  for(let i=0;i<rings.length-1;i++)for(let k=0;k<n-1;k++){const a=i*n+k,b=i*n+k+1,c=(i+1)*n+k+1,d=(i+1)*n+k;I.push(a,b,c,a,c,d);}
+  /* paroi du fond : éventail depuis le centre */
+  const last=goalProfile(W,H,r,r,M),base=P.length/3;
+  P.push(0,(H-r)/2,s*(HZ+D));U.push(0,(H-r)/4);
+  last.forEach(q=>{P.push(q[0],q[1],s*(HZ+D));U.push(q[0]/2,q[1]/2);});
+  for(let k=0;k<last.length;k++)I.push(base,base+1+k,base+1+((k+1)%last.length));
+  const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(P,3));g.setAttribute('uv',new T.Float32BufferAttribute(U,2));g.setIndex(I);return g;
+}
+/* sol de la cage : rectangle dont les coins du fond sont arrondis */
+function goalFloorGeo(s,W,D,r,z0){
+  const sh=new T.Shape(),Z=z=>-s*(HZ+z); /* la rotation -90° autour de X envoie y vers -z */
+  sh.moveTo(-W,Z(z0));sh.lineTo(W,Z(z0));sh.lineTo(W,Z(D-r));
+  for(let k=1;k<=10;k++){const a=k/10*Math.PI/2;sh.lineTo(W-r+r*Math.cos(a),Z(D-r+r*Math.sin(a)));}
+  sh.lineTo(-W+r,Z(D));
+  for(let k=1;k<=10;k++){const a=Math.PI/2+k/10*Math.PI/2;sh.lineTo(-W+r+r*Math.cos(a),Z(D-r+r*Math.sin(a)));}
+  sh.lineTo(-W,Z(z0));return new T.ShapeGeometry(sh);
+}
+function goalTube(s,W,H,r,zoff,rad,mat){ /* cadre de l'ouverture : tube qui suit le contour arrondi */
+  const pr=goalProfile(W,H,r,0,14),cv=new T.CatmullRomCurve3(pr.map(q=>new T.Vector3(q[0],q[1],s*(HZ+zoff))),false,'centripetal');
+  return new T.Mesh(new T.TubeGeometry(cv,120,rad,8,false),mat);
+}
 function buildGoal(s,team){
   const g=new T.Group(),col=TEAM[team];
-  const mk=(rx,ry)=>{const t=TX.net.clone();t.needsUpdate=true;t.wrapS=t.wrapT=T.RepeatWrapping;t.repeat.set(rx,ry);return new T.MeshBasicMaterial({map:t,color:col,transparent:true,opacity:.7,side:T.DoubleSide,depthWrite:false});};
-  const side=mk(GD/2,GH/2),top=mk(GW,GD/2),back=mk(GW,GH/2),hide=new T.MeshBasicMaterial({visible:false});
-  const box=new T.Mesh(new T.BoxGeometry(2*GW,GH,GD),[side,side,top,hide,s>0?back:hide,s>0?hide:back]);
-  box.position.set(0,GH/2,s*(HZ+GD/2));g.add(box);
-  const fl=new T.Mesh(new T.PlaneGeometry(2*GW,GD+R),new T.MeshStandardMaterial({color:0x101a30,emissive:col,emissiveIntensity:.22,roughness:.6}));
-  fl.rotation.x=-Math.PI/2;fl.position.set(0,.03,s*(HZ+(GD-R)/2));g.add(fl);
+  const net=TX.net.clone();net.needsUpdate=true;net.wrapS=net.wrapT=T.RepeatWrapping;
+  const nm=new T.MeshBasicMaterial({map:net,color:col,transparent:true,opacity:.7,side:T.DoubleSide,depthWrite:false});
+  g.add(new T.Mesh(goalNetGeo(s,GW,GH,GD,GCR),nm));
+  const fl=new T.Mesh(goalFloorGeo(s,GW,GD,GCR,-R),new T.MeshStandardMaterial({color:0x101a30,emissive:col,emissiveIntensity:.22,roughness:.6,side:T.DoubleSide}));
+  fl.rotation.x=-Math.PI/2;fl.position.y=.03;g.add(fl);
   const gl=new T.MeshBasicMaterial({color:col});
-  for(const sx of [-1,1]){const p=new T.Mesh(new T.BoxGeometry(.8,GH+.8,.8),gl);p.position.set(sx*GW,GH/2,s*HZ);g.add(p);}
-  const cb=new T.Mesh(new T.BoxGeometry(2*GW+.8,.8,.8),gl);cb.position.set(0,GH,s*HZ);g.add(cb);
+  g.add(goalTube(s,GW,GH,GCR,0,.4,gl));
   // flancs de la découpe dans les rampes
   const N=10,pts=[];for(let k=0;k<=N;k++){const th=k/N*Math.PI/2;pts.push([HZ-R+R*Math.sin(th),R-R*Math.cos(th)]);}
   for(const sx of [-1,1]){
@@ -1721,8 +1767,7 @@ function buildGoal(s,team){
   }
   /* look RL : cadre blanc incandescent, ligne de but, halo de l'équipe dans la cage */
   const core=new T.MeshBasicMaterial({color:0xffffff});
-  for(const sx of [-1,1]){const q=new T.Mesh(new T.BoxGeometry(.35,GH+.4,.35),core);q.position.set(sx*GW,GH/2,s*(HZ-.45));g.add(q);}
-  const cc=new T.Mesh(new T.BoxGeometry(2*GW+.4,.35,.35),core);cc.position.set(0,GH,s*(HZ-.45));g.add(cc);
+  g.add(goalTube(s,GW,GH,GCR,-.45,.2,core));
   const ln=new T.Mesh(new T.PlaneGeometry(2*GW,.5),new T.MeshBasicMaterial({color:col,transparent:true,opacity:.9}));ln.rotation.x=-Math.PI/2;ln.position.set(0,.07,s*HZ);g.add(ln);
   const hg=new T.Sprite(new T.SpriteMaterial({map:TX.glow,color:col,transparent:true,blending:T.AdditiveBlending,depthWrite:false,opacity:.7}));hg.scale.set(2*GW+10,GH+8,1);hg.position.set(0,GH/2,s*(HZ+GD*.6));g.add(hg);
   const sign=new T.Mesh(new T.PlaneGeometry(18,4.2),new T.MeshBasicMaterial({map:labelTex(TNAME[team],TCSS[team]),transparent:true}));
@@ -1906,9 +1951,11 @@ function setArena(kind,small){
     if(CM.cur.defGoals===false){a.goals=false;a.GW=a.GH=a.GD=0;}
     else if(CM.cur.gs&&CM.cur.gs!==1){const k=CM.cur.gs;a.GW=a.GW*k;a.GH=a.GH*k;a.GD=a.GD*Math.min(k,1.3);}
   }
-  if(kind==='std'){const sel=(SV&&SV.set&&SV.set.map)||'champ';MAPK=sel==='rand'?MAPKEYS[(Math.random()*MAPKEYS.length)|0]:(MAPS[sel]?sel:'champ');}
+  if(kind==='std'){ /* en ligne : map imposée par le serveur ; recherche de match : hasard ; sinon : choix des réglages */
+    const sel=(NET.on&&NET.map&&MAPS[NET.map])?NET.map:(cfg.rmap?'rand':((SV&&SV.set&&SV.set.map)||'champ'));
+    MAPK=sel==='rand'?MAPKEYS[(Math.random()*MAPKEYS.length)|0]:(MAPS[sel]?sel:'champ');}
   ARN.kind=ARENAS[kind]?kind:'std';
-  HX=a.HX;HZ=a.HZ;H=a.H;HY=H/2;GW=a.GW;GH=a.GH;GD=a.GD;HASGOAL=a.goals;GCZ=HZ+(GD-R)/2;GHZ=(GD+R)/2;
+  HX=a.HX;HZ=a.HZ;H=a.H;HY=H/2;GW=a.GW;GH=a.GH;GD=a.GD;HASGOAL=a.goals;GCR=Math.max(.5,Math.min(6,GH*.42,GW*.42,GD*.4));GCZ=HZ+(GD-R-GCR)/2;GHZ=(GD+R+GCR)/2;
   HOOP.on=false;DROP.on=false;
   OPEN=!!(CM.cur&&CM.cur.mode==='parkour'&&(kind==='std'||kind==='snow'));
   recomputeCO();
@@ -4357,6 +4404,7 @@ const GATE={on:false,
 if(window.RA_FB||window.RA_FB_ERR)CLOUD.init();else window.addEventListener('ra-fb',()=>CLOUD.init());
 /* NEWS : à CHAQUE mise à jour du jeu, on ajoute une entrée EN HAUT de cette liste (la plus récente en premier), avec sa date dans « d » */
 const NEWS=[
+  {d:'20/11/2026',t:'Map au hasard en ligne et buts arrondis',b:'En ligne, la map est maintenant tirée au sort par le serveur : tu ne la choisis plus et tous les joueurs du match jouent sur la même. Les buts ont aussi des angles arrondis : coins du haut de l\'ouverture et fond de la cage, avec le cadre et le filet qui suivent la forme.'},
   {d:'20/11/2026',t:'Voiture et stade plus réalistes',b:'Carrosserie aux angles arrondis, vrais pneus à flancs bombés, vernis plus brillant. Dans le stade : public avec de vraies silhouettes, bandeaux LED animés, grands écrans avec le score et le chrono, faisceaux des projecteurs. La caméra revient comme avant, et la map se choisit dans le menu Jouer (ou Aléatoire).'},
   {d:'20/11/2026',t:'Vraie liste d\'amis et vrai groupe',b:'Ton compte a maintenant un code ami : ajoute tes amis avec leur code, accepte leurs demandes et vois qui est en ligne, en match ou en recherche. Invite-les dans ton groupe (4 joueurs max) : le groupe cherche un match ensemble et reste dans la même équipe. Les matchs privés se lancent uniquement depuis un groupe de 2 joueurs ou plus ; les salons à code ont disparu.'},
   {d:'19/11/2026',t:'11 maps façon Rocket League',b:'Champions Field, Mannfield, Neo Tokyo, Utopia Coliseum, Wasteland, Urban Central, Beckwith Park, Forbidden Temple, Salty Shores, AquaDome et Farmstead : chaque map a son sol, son ciel, ses lumières et la couleur de ses murs. Choisis-en une dans Réglages > Map (Soccar), ou laisse Aléatoire pour changer à chaque match.'},
@@ -4958,7 +5006,8 @@ function rOpts(){
   if(k==='tour'){const t=SV.tour;h+='<div class="help">'+(t&&t.alive&&!t.champ?'Tournoi en cours : '+TOUR_ROUNDS[t.round]+'.':'Nouveau tournoi : 3 tours à élimination directe.')+'</div>';}
   if(k==='season'){const g=SV.lg;h+='<div class="help">'+(g&&!g.done?'Saison en cours : match '+(g.i+1)+' / '+LG_N+' • '+g.pts+' pts.':'Nouveau championnat : 7 matchs, 3 points par victoire.')+'</div>';}
   if(PARTY.length&&k!=='free'&&k!=='train'&&k!=='moves'&&k!=='goalrun'){const gr=partyRank();h+='<div class="help">👥 Groupe de '+(PARTY.length+1)+' • rang du groupe : <b style="color:'+gr.c+'">'+esc(gr.n)+'</b> • '+esc(PARTY.map(f=>f.name).join(', '))+'</div>';}
-  if(!/hoops|drop|snow/.test(String(fk))&&k!=='moves'&&k!=='goalrun')h+=grp('MAP','map',[['rand','Aléatoire']].concat(MAPKEYS.map(x=>[x,MAPS[x].n])),SV.set.map||'champ');
+  if(!/hoops|drop|snow/.test(String(fk))&&k!=='moves'&&k!=='goalrun'&&(NOOPT.indexOf(k)>=0||k==='exhib'||k==='workshop'||k==='comm'))h+=grp('MAP','map',[['rand','Aléatoire']].concat(MAPKEYS.map(x=>[x,MAPS[x].n])),SV.set.map||'champ');
+  if(NOOPT.indexOf(k)<0&&k!=='exhib'&&k!=='workshop'&&k!=='comm'&&!/hoops|drop|snow/.test(String(fk)))h+='<div class="help">🎲 Map tirée au sort à chaque match (tu ne la choisis pas : c\'est la même pour tous les joueurs).</div>';
   h+=grp('CAMÉRA','ballCam',[[1,'Focus balle'],[0,'Libre']],SV.set.ballCam);
   box.innerHTML=h;
   $('lobinfo').innerHTML='<b>'+mode.ic+' '+mode.n+'</b><small>'+((SZ[fk]&&k!=='season'&&k!=='workshop')?SZN[modeSize(fk)]:'')+'</small>';
@@ -4969,7 +5018,7 @@ function setCfg(k0){
   const m=SV.menu;let k=k0;
   if(k==='exhib')k=m.exMode||'casual';
   k=arcReal(k);
-  cfg.mode=k;cfg.mut=null;cfg.lg=false;
+  cfg.mode=k;cfg.mut=null;cfg.lg=false;cfg.rmap=false;
   cfg.size=modeSize(k);cfg.diff=m.diff;cfg.dur=isRk(k)?5:m.dur;cfg.team=m.team;cfg.pack=m.pack||0;cfg.mv=(m.mv>=0&&m.mv<MOVES.length)?m.mv:0;cfg.mvDemo=m.mvDemo===undefined?1:m.mvDemo;cfg.skill=0;
   if(k0==='workshop'){const w=WS[m.ws||0];cfg.mode='custom';cfg.mut=Object.assign({},w.mut);cfg.size=w.size||2;}
   if(isRk(k)){const mm=mmrOf(rkKey(k,cfg.size));cfg.skill=clamp(.32+mm/1000,.32,1.02);}
@@ -5019,7 +5068,7 @@ function doPlay(){
   }
   if(!partyOK(direct?[k]:list))return;
   if(direct){setCfg(k);startMatch();return;}
-  startQueue(()=>startMatch(),list);
+  startQueue(()=>{cfg.rmap=true;startMatch();},list); /* recherche de match : la map est tirée au sort */
 }
 /* =====================================================================
    CRÉATEUR DE CARTE : obstacles solides (physique SDF) + pastilles de boost
@@ -8199,6 +8248,7 @@ Object.assign(NET,{
     NET.me=m.you;NET.hostId=m.host;NET.host=m.host===m.you;NET.gone=new Set();NET.ended=0;NET.kind=m.priv?'room':'queue';NET.tIn=NET.tSn=0;
     setCfg(m.cfg.mode);cfg.size=m.cfg.size;cfg.dur=m.cfg.dur;cfg.team=me.team;cfg.party=[];cfg.partySk=[];cfg.lg=false;cfg.mut=null;
     CM.pend=null;
+    NET.map=(m.map&&MAPS[m.map])?m.map:null; /* map tirée au sort par le serveur : la même pour tous les joueurs du match */
     NET.on=true;
     const mine=NET.roster.filter(p=>p.team===me.team).map(p=>p.name),foe=NET.roster.filter(p=>p.team!==me.team).map(p=>p.name);
     while(foe.length<m.cfg.size)foe.push('🤖');while(mine.length<m.cfg.size)mine.push('🤖');
