@@ -1412,12 +1412,13 @@ const FOX={ids:[],load:null,price:10000};
   const li=TITLES.length;TITLES.push('Roi des renards');
   const fi=FINS.length;FINS.push(['Néon violet',.78,.1]);
   A('car',101,'Kitsune RND',5,{sub:'Renard • Hitbox '+HB.std.n,hb:'std'});
+  A('car',102,'Bugatti RND',5,{sub:'Hypercar • Hitbox '+HB.plank.n,hb:'plank'});
   A('decal',di,DECALS[di],5);
   A('wheel',wi,WHEELS[wi][0],5,{wd:{st:WHEELS[wi][1],n:WHEELS[wi][2],cm:WHEELS[wi][3],rs:WHEELS[wi][4],tw:WHEELS[wi][5]}});
   A('boost',bi,BOOSTS[bi][0],5,{bd:{c1:BOOSTS[bi][1],c2:BOOSTS[bi][2],k:BOOSTS[bi][3]}});
   A('topper',ti,TOPPERS[ti],5);
   A('ant',ai,ANTS[ai],5);
-  A('expl',ei,'Meute néon',5,{ed:{pat:'fox',col:['#5b2cff','#ffffff','#d63bff']}});
+  A('expl',ei,'Renard croqueur',5,{ed:{pat:'fox',col:['#5b2cff','#ffffff','#d63bff']}});
   A('trail',ri,TRAILS[ri][0],5,{td:{k:TRAILS[ri][1],col:TRAILS[ri][2]}});
   A('eng',gi,ENGS[gi][0],5,{ad:{t1:ENGS[gi][1],base:ENGS[gi][2],k:ENGS[gi][3],cut:ENGS[gi][4],t2:ENGS[gi][5],r2:ENGS[gi][6]}});
   A('anth',hi,ANTHS[hi][0],5,{nd:ANTHS[hi][1]});
@@ -1453,6 +1454,7 @@ function carParams(i){
   if(CARP[i])return CARP[i];
   if(i===100)return (CARP[100]=secretCarParams());
   if(i===101)return (CARP[101]=foxCarParams());
+  if(i===102)return (CARP[102]=bugCarParams());
   const a=ARCH[i%12],v=(i/12)|0,rg=mulberry(1000+i*77),j=v===0?0:1;
   const sx=1+(rg()-.5)*.24*j,sy=1+(rg()-.5)*.34*j,ws=1+(rg()-.5)*.14*j;
   const tx=p=>[p[0]*sx,-.45+(p[1]+.45)*sy];
@@ -1492,6 +1494,7 @@ function loadSV(){
 function saveSV(){try{localStorage.setItem(SAVE_KEY,JSON.stringify(SV));}catch(e){}try{LB.schedule();}catch(e){}try{CLOUD.schedule();}catch(e){}}
 SV=loadSV();
 try{delete SV.set.unlockAll;}catch(e){}
+try{if(!SV.owned['car:102']&&FOX.ids.filter(i=>i!=='car:102').every(i=>SV.owned[i]))SV.owned['car:102']=1;}catch(e){} /* la Bugatti RND est offerte à ceux qui ont déjà tout le pack Renard */
 const mmrOf=k=>SV.mmr[k]!==undefined?SV.mmr[k]:(SV.ndStart||520);
 const owns=id=>{const it=IT[id];if(it&&it.secret)return !!SV.owned[id];return !!it&&(it.price===0||!!SV.owned[id]);};
 const lvlOf=xp=>Math.floor(xp/500)+1;
@@ -2713,6 +2716,12 @@ const LOGO64='/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUEBAQEAwUEBAQGBQUGCA0ICAcHCBALDA
   DRAW[LI]=x=>{paintLogo(x);if(!(FOXLOGO.complete&&FOXLOGO.naturalWidth))FOXLOGO.addEventListener('load',()=>{paintLogo(x);const t=DTEX[LI];if(t)t.needsUpdate=true;},{once:true});};
   DECAL_FULL[LI]=true;DECAL_SIZE[LI]=('ontouchstart' in window)?[1024,1024]:[2048,2048];DECAL_HOOD[DI]=LI;
 }
+/* Bugatti RND : hypercar large et basse (inspirée des hypercars à calandre « fer à cheval »), grande aile arrière, 4 sorties d'échappement */
+function bugCarParams(){
+  return {body:[[-2.3,-.45],[2.35,-.45],[2.6,-.32],[1.55,-.03],[.5,.17],[-1.6,.27],[-2.3,.05]],cab:[[-1.15,.14],[.45,.12],[0,.58],[-.8,.6]],
+    w:2.25,wr:.52,wb:1.55,xmin:-2.3,xmax:2.6,sp:3,split:true,scoop:false,rscoop:true,fins:false,pods:false,flare:true,exh:4,lbar:false,
+    head:0xcfe8ff,tail:0xff2020,cv:'glass',tint:0x0a1226,hb:'plank',arch:'Hypercar'};
+}
 function foxCarParams(){
   return {body:[[-2.15,-.45],[2.3,-.45],[2.65,-.3],[1.5,0],[.4,.22],[-1.7,.3],[-2.2,.12]],cab:[[-1.1,.2],[.4,.18],[-.1,.7],[-.8,.72]],
     w:2.05,wr:.55,wb:1.4,xmin:-2.2,xmax:2.65,sp:3,split:true,scoop:true,rscoop:false,fins:true,pods:false,flare:true,exh:2,lbar:true,
@@ -2869,6 +2878,18 @@ function makeCarMesh(L,team,free){
       for(const sx of [-1,1])g.add(pt(G3.box(.03,.04,len*.6),accM,sx*(w/2+.01),-.2,zc));
     }else if(A==='Muscle'){
       for(const sx of [-1,1])g.add(pt(G3.box(.4,.02,.55),blk,sx*.32,.16,-1.1));
+    }else if(A==='Hypercar'){
+      /* calandre « fer à cheval » : chrome derrière, noir devant */
+      const hs=cg('bugHS',()=>{const sh=new T.Shape();sh.moveTo(-.17,-.24);sh.lineTo(-.27,.06);sh.absarc(0,.06,.27,Math.PI,0,true);sh.lineTo(.17,-.24);sh.closePath();
+        const x=new T.ExtrudeGeometry(sh,{depth:.05,bevelEnabled:false,curveSegments:14});x.translate(0,0,-.025);return x;});
+      const hc=pt(hs,chrome,0,nose[1]+.16,zN-.04);hc.scale.set(1.18,1.18,1);g.add(hc);
+      const hb2=pt(hs,blk,0,nose[1]+.16,zN-.075);hb2.scale.set(.92,.92,1);g.add(hb2);
+      /* ligne en « C » sur chaque flanc, couleur d'accent */
+      const cg2=cg('bugC',()=>{const x=new T.TorusGeometry(.3,.028,6,26,Math.PI*1.25);x.rotateZ(-Math.PI*1.25/2);x.scale(1.9,1,1);x.rotateY(Math.PI/2);return x;});
+      for(const sx of [-1,1]){
+        g.add(pt(cg2,accM,sx*(w/2+.012),-.1,cabz+.1));
+        g.add(pt(G3.box(.05,.14,.6),blk,sx*(w/2+.005),-.12,cabz+.95));   // prise d'air latérale
+      }
     }
   }
   // néon sous la caisse
@@ -3183,6 +3204,33 @@ function blast(q,ca,cb,k,sc){
 }
 const burstD=burst;
 function colNum(s,team){return s==='t'?TEAM[team]:hexN(s);}
+/* Renard croqueur : tête de renard néon en 3D (+z = museau). userData : head (pivot de la tête), jaw (mâchoire du bas, pivote autour de X) */
+function makeFoxBiter(cFur,cWhite,cNeon){
+  const g=new T.Group(),head=new T.Group(),jaw=new T.Group();g.add(head);head.add(jaw);jaw.position.set(0,-.3,.35);
+  const M=(c,e)=>new T.MeshLambertMaterial({color:c,emissive:c,emissiveIntensity:e});
+  const fur=M(new T.Color(cFur).lerp(new T.Color(0xffffff),.18),.42),wht=M(cWhite,.6),nvy=M(0x12062e,.15),pink=M(0xff5fb0,.55),neon=M(cNeon,.7),cav=M(0x1c0630,.1);
+  const SPH=new T.SphereGeometry(1,20,14),CON=new T.ConeGeometry(1,1,5),BOX=new T.BoxGeometry(1,1,1);
+  const add=(par,geo,mat,x,y,z,sx,sy,sz,rx,ry,rz)=>{const m=new T.Mesh(geo,mat);m.position.set(x,y,z);m.scale.set(sx,sy,sz);m.rotation.set(rx||0,ry||0,rz||0);par.add(m);return m;};
+  add(head,SPH,fur,0,0,0,1.15,1,1.05);                                    // crâne
+  add(head,SPH,wht,-.82,-.3,.35,.5,.45,.55);add(head,SPH,wht,.82,-.3,.35,.5,.45,.55);   // joues blanches
+  add(head,CON,wht,-1.2,-.28,.25,.3,.7,.3,0,0,Math.PI/2);add(head,CON,wht,1.2,-.28,.25,.3,.7,.3,0,0,-Math.PI/2);   // mèches de joue
+  add(head,SPH,fur,0,-.12,1.15,.55,.42,1.0);                              // museau
+  add(head,SPH,wht,0,-.34,1.1,.5,.2,.9);                                  // lèvre du haut
+  add(head,SPH,nvy,0,.02,2.1,.2,.16,.18);                                 // truffe
+  add(head,SPH,cav,0,-.36,1.0,.46,.22,.8);                                // fond de la gueule
+  for(const sx of [-1,1]){
+    add(head,SPH,wht,sx*.5,.38,.82,.26,.3,.14);add(head,SPH,neon,sx*.5,.36,.93,.16,.21,.08);add(head,SPH,nvy,sx*.5,.35,.98,.085,.13,.05);   // yeux
+    add(head,BOX,nvy,sx*.5,.7,.86,.55,.09,.1,0,0,-sx*.38);               // sourcils furieux
+    add(head,CON,fur,sx*.7,1.05,-.1,.5,1.3,.4,0,0,-sx*.22);add(head,CON,wht,sx*.7,.98,0,.3,.9,.22,0,0,-sx*.22);   // oreilles
+    add(head,CON,wht,sx*.32,-.5,1.7,.075,.3,.075,Math.PI);add(head,CON,wht,sx*.2,-.47,1.35,.06,.2,.06,Math.PI);    // crocs du haut
+    add(jaw,CON,wht,sx*.3,.0,1.5,.07,.25,.07);                            // crocs du bas
+  }
+  add(head,CON,fur,0,1.0,.35,.28,.55,.25);                                // épi sur le front
+  add(jaw,SPH,wht,0,-.2,.8,.5,.2,.95);add(jaw,SPH,pink,0,-.06,.78,.32,.1,.7);add(jaw,SPH,wht,0,-.2,1.5,.3,.16,.3);   // mâchoire, langue, menton
+  add(g,SPH,fur,0,-.55,-1.7,1.15,1.0,1.7);add(g,SPH,wht,0,-.75,-.5,.75,.7,.6);   // corps + poitrail
+  g.userData={head:head,jaw:jaw};
+  return g;
+}
 function runExplosion(ed,team,p){
   const cols=ed.col.map(s=>colNum(s,team)),c0=cols[0],c1=cols[1]||0xffffff;
   const q=V3(p.x,p.y,p.z),sc=fxScene();
@@ -3195,16 +3243,44 @@ function runExplosion(ed,team,p){
   const kr=REAL[ed.pat]===undefined?.3:REAL[ed.pat];
   if(kr>0)blast(q,c0,c1,kr,sc);
   switch(ed.pat){
-    case 'fox':{ /* Meute néon : coque violette + 3 empreintes de patte qui montent face à la caméra */
-      const cA=cols[0],cB=cols[1]||0xffffff,cC=cols[2]||0xd63bff;
-      shell(q,cA,200,40,1.2,0);shell(q,cC,120,26,1.4,0);burst(q,cB,90,30,1.1,4);
-      addRing(q,cC,34,.8,sc);later(150,()=>addRing(q,cA,26,.9,sc));
-      const cdx=camera.position.x-q.x,cdz=camera.position.z-q.z,cln=Math.hypot(cdx,cdz)||1,rx=cdz/cln,rz=-cdx/cln;
-      const pawD=[[0,-2,2.6],[-3.3,1.4,1.1],[-1.2,3.2,1.1],[1.2,3.2,1.1],[3.3,1.4,1.1]];
-      for(let n=0;n<3;n++)later(250+n*330,()=>{const ox=(n-1)*12,oy=7+n*2;
-        pawD.forEach((d,k)=>{const cc=rgb(k?cB:cC),cnt=k?26:70;for(let i=0;i<cnt;i++){const a=rnd()*6.283,rr=Math.sqrt(rnd())*d[2],px=(d[0]+Math.cos(a)*rr)*1.5+ox;
-          emit(q.x+rx*px,q.y+oy+(d[1]+Math.sin(a)*rr)*1.5,q.z+rz*px,0,3,0,cc[0],cc[1],cc[2],1.5+rnd()*.3,0);}});});
-      for(let i=0;i<6;i++)later(400+i*140,()=>burst(V3(q.x+(rnd()-.5)*18,q.y+4+rnd()*8,q.z+(rnd()-.5)*10),i%2?cC:cA,40,22,1.2,5));
+    case 'fox':{ /* Renard croqueur : un renard néon surgit du but, ouvre grand la gueule, croque 2 fois, mâchouille puis rentre dans le but */
+      const cA=cols[0],cB=cols[1]||0xffffff,cC=cols[2]||0xd63bff,kC=rgb(cC);
+      let dx=-q.x,dz=-q.z,dl=Math.hypot(dx,dz);   /* le renard regarde vers le terrain (centre de l'arène), sinon vers la caméra */
+      if(dl<1){dx=camera.position.x-q.x;dz=camera.position.z-q.z;dl=Math.hypot(dx,dz)||1;}
+      dx/=dl;dz/=dl;
+      let fox=null;try{fox=makeFoxBiter(cA,cB,cC);}catch(e){console.warn('Renard croqueur',e);}
+      if(!fox){shell(q,cA,200,40,1.2,0);shell(q,cC,120,26,1.4,0);burst(q,cB,90,30,1.1,4);addRing(q,cC,34,.8,sc);break;}   /* secours : l'ancienne explosion violette */
+      const S=3.4,U=fox.userData;
+      fox.rotation.y=Math.atan2(dx,dz);
+      const start=V3(q.x-dx*3,q.y-.5,q.z-dz*3),out=V3(q.x+dx*6.5,q.y+1.2,q.z+dz*6.5);
+      fox.position.copy(start);fox.scale.setScalar(.01);
+      const ph=(t,a,b)=>Math.max(0,Math.min(1,(t-a)/(b-a))),eO=k=>1-Math.pow(1-k,3),eI=k=>k*k*k,eB=k=>{const c=1.8;return 1+(c+1)*Math.pow(k-1,3)+c*Math.pow(k-1,2);};
+      const mouth=()=>{fox.updateMatrixWorld(true);return fox.localToWorld(V3(0,-.55,1.9));};
+      const crunch=big=>{const mp=mouth();burst(mp,cB,big?60:36,big?30:22,.9,6);burst(mp,cC,big?46:28,big?26:18,.8,5);addRing(mp,cC,big?14:9,.45,sc);blast(mp,cC,cB,big?.45:.3,sc);addShake(big?.7:.45);
+        try{noiseHit(.09,.5,3600);tone(240,70,.12,'square',.14);tone(1500,420,.06,'triangle',.07);later(45,()=>{noiseHit(.07,.4,2600);tone(180,60,.09,'square',.1);});}catch(e){}};
+      /* apparition : coque néon + ondes devant le but */
+      shell(q,cA,160,36,1.1,0);burst(q,cC,70,32,.9,2);addRing(q,cC,28,.7,sc);later(160,()=>addRing(q,cA,20,.8,sc));
+      try{tone(120,420,.35,'sawtooth',.12);}catch(e){}
+      let bit1=false,bit2=false,gone=false;
+      addFxObj({m:fox,sc:sc,life:2.4,upd:(o)=>{
+        const t=o.t,inK=ph(t,0,.5),outK=ph(t,1.8,2.35),A=eO(inK)*(1-eI(outK)),B=Math.max(.01,eB(inK)*(1-eI(outK)));
+        fox.position.lerpVectors(start,out,A);fox.scale.setScalar(S*B);
+        let ja=0;                                                      /* angle de la mâchoire */
+        if(t<.35)ja=0;
+        else if(t<.7)ja=.85*eO(ph(t,.35,.7));
+        else if(t<.78)ja=.85*(1-ph(t,.7,.78));
+        else if(t<1.05)ja=1.0*eO(ph(t,.78,1.05));
+        else if(t<1.13)ja=1.0*(1-ph(t,1.05,1.13));
+        else if(t<1.8)ja=.1+.07*Math.sin((t-1.13)*22);                 /* il mâchouille */
+        else ja=.1*(1-ph(t,1.8,2.0));
+        U.jaw.rotation.x=ja;
+        const lunge=((t>.66&&t<.8)?Math.sin(ph(t,.66,.8)*Math.PI):0)+((t>1.01&&t<1.15)?Math.sin(ph(t,1.01,1.15)*Math.PI):0);
+        U.head.position.z=lunge*.7;U.head.rotation.x=-.2*ja;U.head.rotation.z=(t>1.13&&t<1.8)?.07*Math.sin(t*9):0;
+        if(!bit1&&t>=.78){bit1=true;crunch(false);}
+        if(!bit2&&t>=1.13){bit2=true;crunch(true);}
+        if(!gone&&t>=1.85){gone=true;burst(q,cA,70,30,1,3);addRing(q,cB,22,.6,sc);}
+        if(rnd()<.7)emit(fox.position.x+(rnd()-.5)*S*2,fox.position.y+rnd()*S*1.4,fox.position.z+(rnd()-.5)*S*2,0,3+rnd()*3,0,kC[0],kC[1],kC[2],.7,0);   /* petites lueurs néon autour */
+      },die:()=>{fox.traverse(ch=>{if(ch.geometry)ch.geometry.dispose();if(ch.material)ch.material.dispose();});}});
       break;}
     case 'firework':
       burst(q,c0,90,30,1.4,6);
@@ -5060,6 +5136,7 @@ const GATE={on:false,
 if(window.RA_FB||window.RA_FB_ERR)CLOUD.init();else window.addEventListener('ra-fb',()=>CLOUD.init());
 /* NEWS : à CHAQUE mise à jour du jeu, on ajoute une entrée EN HAUT de cette liste (la plus récente en premier), avec sa date dans « d » */
 const NEWS=[
+  {d:'25/11/2026',t:'Bugatti RND + Renard croqueur',b:'Le pack Renard Néon RND a une nouvelle voiture, la Bugatti RND (hypercar large avec calandre en fer à cheval et ligne en C). Son explosion de but, « Renard croqueur », fait surgir un grand renard du but : il ouvre la gueule et croque deux fois avant de rentrer.',go:['locker','Voir le casier']},
   {d:'25/11/2026',t:'Tag CRÉATEUR',b:'Les joueurs qui ont un code créateur ont maintenant un tag CRÉATEUR : il s\'affiche à côté de leur nom sur l\'écran « Match trouvé », visible par tous les joueurs du match.'},
   {d:'25/11/2026',t:'Logo RND sur le capot',b:'Dans le pack Renard, le logo RND est maintenant bien visible sur le capot de la voiture : plus grand, relevé vers l\'avant et en meilleure qualité.',go:['lobby','Voir ma voiture']},
   {d:'25/11/2026',t:'Menu Jouer en petits carrés',b:'Les modes du menu Jouer sont maintenant de petits carrés avec un fond illustré (SVG) propre à chaque mode, comme dans le vrai Rocket League.',go:['lobby','Ouvrir Jouer']},
