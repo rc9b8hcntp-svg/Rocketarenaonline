@@ -273,6 +273,7 @@ div.cv b{font-size:12px;text-shadow:0 1px 4px #000}
 @keyframes sp{to{transform:rotate(360deg)}}
 .vs{display:flex;align-items:center;justify-content:center;gap:12px;margin:12px 0;font-size:15px;flex-wrap:wrap}
 .vs span{font-weight:900;font-style:italic;opacity:.6}
+.crtag{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:6px;background:linear-gradient(180deg,#ffd166,#ff8a2a);color:#0a1840;font-size:.62em;font-weight:900;font-style:italic;letter-spacing:.6px;text-transform:uppercase;vertical-align:middle;white-space:nowrap}
 #toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);z-index:60;padding:10px 18px;border-radius:20px;background:rgba(10,16,36,.95);border:1px solid rgba(120,170,255,.45);font-weight:700;font-size:14px;opacity:0;pointer-events:none;transition:.25s}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 #pw{position:absolute;left:50%;bottom:calc(max(14px,env(safe-area-inset-bottom)) + 40px);transform:translateX(-50%);display:none;padding:10px 18px;border-radius:24px;background:rgba(10,16,36,.85);border:2px solid #ffd166;font-weight:900;font-style:italic;letter-spacing:1px;font-size:clamp(13px,2.8vmin,20px);color:#ffd166;box-shadow:0 0 18px rgba(255,209,102,.5)}
@@ -5059,6 +5060,7 @@ const GATE={on:false,
 if(window.RA_FB||window.RA_FB_ERR)CLOUD.init();else window.addEventListener('ra-fb',()=>CLOUD.init());
 /* NEWS : à CHAQUE mise à jour du jeu, on ajoute une entrée EN HAUT de cette liste (la plus récente en premier), avec sa date dans « d » */
 const NEWS=[
+  {d:'25/11/2026',t:'Tag CRÉATEUR',b:'Les joueurs qui ont un code créateur ont maintenant un tag CRÉATEUR : il s\'affiche à côté de leur nom sur l\'écran « Match trouvé », visible par tous les joueurs du match.'},
   {d:'25/11/2026',t:'Logo RND sur le capot',b:'Dans le pack Renard, le logo RND est maintenant bien visible sur le capot de la voiture : plus grand, relevé vers l\'avant et en meilleure qualité.',go:['lobby','Voir ma voiture']},
   {d:'25/11/2026',t:'Menu Jouer en petits carrés',b:'Les modes du menu Jouer sont maintenant de petits carrés avec un fond illustré (SVG) propre à chaque mode, comme dans le vrai Rocket League.',go:['lobby','Ouvrir Jouer']},
   {d:'24/11/2026',t:'Codes d\'échange',b:'Dans COMPTE, entre un code d\'échange donné par le staff pour gagner des crédits, des voitures ou d\'autres objets (un code ne s\'utilise qu\'une fois par compte). Le staff crée et gère ces codes depuis COMPTE, où se trouve maintenant aussi le réglage de la boutique.',go:['acc','Ouvrir le compte']},
@@ -5767,7 +5769,7 @@ function startQueueSim(cb,list){
     }
     const pm=MODES.find(x=>x.k===pick)||MODES[0],psz=SZ[pick]?modeSize(pick):0;
     const rg=mulberry((Date.now()/1000)|0),opp=[];for(let i=0;i<Math.max(1,psz||1);i++)opp.push(FAKEOPP[(rg()*FAKEOPP.length)|0]);
-    box.innerHTML='<h2 style="color:#7dffb0">MATCH TROUVÉ !</h2><div class="sub">'+pm.n.replace(' classé','')+(isRk(pick)?' (classé)':'')+' • '+(psz?SZN[psz]:'')+'</div><div class="vs"><b class="tb2">'+esc(SV.name)+PARTY.slice(0,Math.max(0,(psz||1)-1)).map(f=>' · '+esc(f.name)).join('')+'</b><span>VS</span><b class="to2">'+opp.join(' · ')+'</b></div>';
+    box.innerHTML='<h2 style="color:#7dffb0">MATCH TROUVÉ !</h2><div class="sub">'+pm.n.replace(' classé','')+(isRk(pick)?' (classé)':'')+' • '+(psz?SZN[psz]:'')+'</div><div class="vs"><b class="tb2">'+esc(SV.name)+(SV.iscr?CRTAG:'')+PARTY.slice(0,Math.max(0,(psz||1)-1)).map(f=>' · '+esc(f.name)).join('')+'</b><span>VS</span><b class="to2">'+opp.join(' · ')+'</b></div>';
     setTimeout(()=>{if(cancelled)return;q.classList.remove('show');cb();},1500);
   },2200+rnd()*1200);
 }
@@ -6785,6 +6787,7 @@ function lockerClick(id){
    (objets, caisses, lots). Les créateurs demandent leur code au staff depuis le même onglet ; le staff accepte ou refuse.
    Firestore : « creators » (id = code : owner, name, earned, claimed, uses, ts) et « creatorReqs » (id = id du joueur : demande en attente).
    ATTENTION : comme pour les bannissements, la vraie protection est dans les règles Firestore (voir firestore-creators.rules.txt). */
+const CRTAG='<span class="crtag">CRÉATEUR</span>'; /* petit tag affiché à côté du nom d'un créateur sur l'écran « Match trouvé » */
 const CREA={PCT:.2,col:'creators',rcol:'creatorReqs',mc:null,mt:0,fl:false,
   norm(c){return String(c||'').toUpperCase().replace(/[^A-Z0-9_-]/g,'').slice(0,16);},
   async lookup(code){const F=window.RA_FB;if(!F||!code)return null;const sn=await F.getDoc(F.doc(F.db,CREA.col,code));return sn.exists()?sn.data():null;},
@@ -6822,7 +6825,9 @@ const CREA={PCT:.2,col:'creators',rcol:'creatorReqs',mc:null,mt:0,fl:false,
     if(!force&&CREA.mc&&CREA.mc.id===id&&Date.now()-CREA.mt<20000)return CREA.mc.d;
     const sn=await F.getDocs(F.query(F.collection(F.db,CREA.col),F.where('owner','==',id),F.limit(1)));
     const d=sn.empty?null:Object.assign({id:sn.docs[0].id},sn.docs[0].data());
-    CREA.mc={id:id,d:d};CREA.mt=Date.now();return d;},
+    CREA.mc={id:id,d:d};CREA.mt=Date.now();
+    if(id===LB.getId()){const cr=d?1:0;if((SV.iscr|0)!==cr){SV.iscr=cr;saveSV();}}   /* tag CRÉATEUR : vrai si le compte possède un code créateur */
+    return d;},
   async request(){
     const F=window.RA_FB;if(!F||!CLOUD.user){toast('Connecte-toi à ton compte pour envoyer une demande');return;}
     const want=CREA.norm($('crWant').value),link=String($('crLink').value||'').trim().slice(0,120),msg=String($('crMsg').value||'').trim().slice(0,200);
@@ -9462,7 +9467,7 @@ Object.assign(NET,{
     return u.replace(/^http/,'ws');
   },
   mmrNow(){try{const m=SV.menu,k=isRk(m.mode)?m.mode:'ranked';return mmrOf(rkKey(k,modeSize(k)));}catch(e){return 500;}},
-  prof(){return {name:SV.name||'Joueur',L:SV.load,mmr:NET.mmrNow()};},
+  prof(){return {name:SV.name||'Joueur',L:SV.iscr?Object.assign({cr:1},SV.load):SV.load,mmr:NET.mmrNow()};},
   send(o){const w=NET.ws;if(w&&w.readyState===1)try{w.send(JSON.stringify(o));}catch(e){}},
   connect(){
     if(NET.ws&&NET.ws.readyState===1)return Promise.resolve(true);
@@ -9559,17 +9564,17 @@ Object.assign(NET,{
   /* ---------- début de match ---------- */
   begin(m){
     clearInterval(NET.qiv);
-    NET.roster=m.players.map(p=>({id:p.id,name:p.name,team:p.team,slot:p.slot,L:p.L,mmr:p.mmr,me:p.id===m.you}));
+    NET.roster=m.players.map(p=>({id:p.id,name:p.name,team:p.team,slot:p.slot,L:p.L,mmr:p.mmr,me:p.id===m.you,cr:!!(p.L&&p.L.cr===1)||(p.id===m.you&&!!SV.iscr)}));
     const me=NET.roster.find(p=>p.me);if(!me)return;
     NET.me=m.you;NET.hostId=m.host;NET.host=m.host===m.you;NET.gone=new Set();NET.ended=0;NET.kind=m.priv?'room':'queue';NET.tIn=NET.tSn=0;
     setCfg(m.cfg.mode);cfg.size=m.cfg.size;cfg.dur=m.cfg.dur;cfg.team=me.team;cfg.party=[];cfg.partySk=[];cfg.lg=false;cfg.mut=null;
     CM.pend=null;
     NET.map=(m.map&&MAPS[m.map])?m.map:null; /* map tirée au sort par le serveur : la même pour tous les joueurs du match */
     NET.on=true;
-    const mine=NET.roster.filter(p=>p.team===me.team).map(p=>p.name),foe=NET.roster.filter(p=>p.team!==me.team).map(p=>p.name);
+    const hn=p=>esc(p.name)+(p.cr?CRTAG:''),mine=NET.roster.filter(p=>p.team===me.team).map(hn),foe=NET.roster.filter(p=>p.team!==me.team).map(hn);
     while(foe.length<m.cfg.size)foe.push('🤖');while(mine.length<m.cfg.size)mine.push('🤖');
     const q=$('queue'),box=$('qbox');q.classList.add('show');modalClose();
-    box.innerHTML='<h2 style="color:#7dffb0">MATCH TROUVÉ !</h2><div class="sub">'+esc((MODES.find(x=>x.k===m.cfg.mode)||{n:''}).n.replace(' classé',''))+(isRk(m.cfg.mode)?' (classé)':'')+'</div><div class="vs"><b class="tb2">'+mine.map(esc).join(' · ')+'</b><span>VS</span><b class="to2">'+foe.map(esc).join(' · ')+'</b></div>';
+    box.innerHTML='<h2 style="color:#7dffb0">MATCH TROUVÉ !</h2><div class="sub">'+esc((MODES.find(x=>x.k===m.cfg.mode)||{n:''}).n.replace(' classé',''))+(isRk(m.cfg.mode)?' (classé)':'')+'</div><div class="vs"><b class="tb2">'+mine.join(' · ')+'</b><span>VS</span><b class="to2">'+foe.join(' · ')+'</b></div>';
     try{SFX.beep(true);}catch(e){}
     setTimeout(()=>{q.classList.remove('show');if(NET.on)startMatch();},1500);
   },
