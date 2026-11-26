@@ -29,8 +29,15 @@ Si tu héberges le jeu ailleurs (GitHub Pages…), ouvre-le une fois avec `?mm=w
 - `FILL_SECONDS` (20) : attente avant de compléter avec des bots en Casual (le classé n'est jamais complété).
 - `ALLOWED_ORIGINS` : liste d'origines autorisées, séparées par des virgules.
 - `MAX_CONNECTIONS` (1000).
+- `KEEPALIVE_URL` : URL publique du service ; le serveur s'y « visite » toutes les 10 min pour ne pas s'endormir (déjà automatique sur Render via `RENDER_EXTERNAL_URL`).
 
 `/health` et `/stats` (joueurs en ligne, files, salons, groupes, comptes) sont disponibles en HTTP.
+
+## Règles Firestore
+Le fichier `firestore.rules` contient **toutes** les règles du jeu (classement, sauvegardes cloud, cartes, cartes privées, bannissements, boutique/quêtes, codes créateur, codes d'échange, verrou d'activation). Firebase Console → Firestore Database → Règles → colle le fichier → Publier.
+
+## Stabilité
+Le serveur journalise les erreurs au lieu de s'arrêter (`uncaughtException`), isole chaque message client et chaque tâche périodique, reprend la session d'un joueur même si l'ancien socket n'est pas encore détecté comme mort, et sert `index.html` compressé (gzip) depuis la mémoire.
 
 ## Limites connues
 - Le serveur doit pouvoir joindre `googleapis.com` (certificats de vérification des jetons) ; sinon personne ne peut se connecter à son compte côté serveur (le jeu en ligne reste possible en invité).

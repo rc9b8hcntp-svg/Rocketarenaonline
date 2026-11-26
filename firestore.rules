@@ -1,0 +1,225 @@
+rules_version = '2';
+/* ======================================================================
+   Rocket Arena 3D – règles Firestore COMPLÈTES (projet « rocketarena »)
+   À coller dans : Firebase Console → Firestore Database → Règles → Publier.
+
+   Collections utilisées par le jeu :
+     players          classement en ligne (invités + comptes)
+     saves            sauvegarde cloud d'un compte (privée)
+     maps             cartes de la communauté (publiques)
+     privmaps         cartes privées (accessibles uniquement avec le code)
+     bans             joueurs bannis (écriture : staff)
+     shop             boutique + quêtes (config du staff)
+     creators         codes créateur (Support-a-Creator)
+     creatorReqs      demandes de code créateur
+     redeemCodes      codes d'échange (+ sous-collection claims)
+     config           verrou d'activation (launch, codes, open)
+
+   Aucun index composite à créer : toutes les requêtes du jeu utilisent un seul champ.
+   ====================================================================== */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------- outils ---------- */
+    function signedIn() { return request.auth != null; }
+
+    /* staff = ce compte, e-mail vérifié (le même que STAFF_EMAIL dans le jeu) */
+    function isStaff() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && 'email' in request.auth.token
+        && request.auth.token.email.lower() == 'college.maxence59@gmail.com';
+    }
+
+    /* identifiant invité du jeu : 24 lettres/chiffres (un uid Firebase en fait 28, donc aucun risque de collision) */
+    function isGuestId(id) { return id is string && id.matches('^[A-Za-z0-9]{24}$'); }
+
+    /* un joueur ne peut écrire que sous son uid (connecté) ou sous un identifiant invité */
+    function myId(id) { return (signedIn() && request.auth.uid == id) || isGuestId(id); }
+
+    function isBanned(id) { return exists(/databases/$(database)/documents/bans/$(id)); }
+
+    function num(v, lo, hi) { return v is number && v >= lo && v <= hi; }
+
+    /* ---------- classement en ligne ---------- */
+    function validPlayer(d) {
+      return d.keys().hasOnly(['name','xp','wins','goals','assists','saves','demos','matches','mmr','rk','updated'])
+        && d.keys().hasAll(['name','xp','wins','goals','assists','saves','demos','matches','mmr','rk','updated'])
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 12
+        && num(d.xp, 0, 1000000000)
+        && num(d.wins, 0, 10000000)
+        && num(d.goals, 0, 100000000)
+        && num(d.assists, 0, 100000000)
+        && num(d.saves, 0, 100000000)
+        && num(d.demos, 0, 100000000)
+        && num(d.matches, 0, 10000000)
+        && num(d.mmr, 0, 100000)
+        && d.rk is map && d.rk.size() <= 40
+        && d.updated == request.time;
+    }
+    match /players/{id} {
+      allow read: if true;
+      allow create, update: if myId(id) && !isBanned(id) && validPlayer(request.resource.data);
+      allow delete: if isStaff();
+    }
+
+    /* ---------- sauvegarde cloud : strictement privée ---------- */
+    function validSave(d) {
+      return d.keys().hasOnly(['data','rev','xp','matches','name'])
+        && d.keys().hasAll(['data','rev'])
+        && d.data is string && d.data.size() <= 900000
+        && d.rev is string && d.rev.size() <= 40
+        && (!('xp' in d) || d.xp is number)
+        && (!('matches' in d) || d.matches is number)
+        && (!('name' in d) || (d.name is string && d.name.size() <= 12));
+    }
+    match /saves/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid && validSave(request.resource.data);
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    /* ---------- cartes de la communauté ---------- */
+    function validMapBase(d) {
+      return d.name is string && d.name.size() >= 3 && d.name.size() <= 24
+        && d.author is string && d.author.size() <= 24
+        && d.aid is string && myId(d.aid) && !isBanned(d.aid)
+        && d.small is bool && d.dp is bool
+        && d.n is number && d.n >= 3 && d.n <= 400
+        && d.objs is string && d.objs.size() <= 100000
+        && d.ts == request.time
+        && (!('tw' in d) || (d.tw is string && d.tw.size() <= 230000))
+        && (!('tf' in d) || (d.tf is string && d.tf.size() <= 230000))
+        && (!('twr' in d) || d.twr is number);
+    }
+    function validMap(d) {
+      return d.keys().hasOnly(['name','author','aid','small','dp','n','objs','likes','plays','rep','ts','off','tw','twr','tf'])
+        && d.keys().hasAll(['name','author','aid','small','dp','n','objs','likes','plays','rep','ts'])
+        && validMapBase(d)
+        && d.likes == 0 && d.plays == 0 && d.rep == 0
+        && (!('off' in d) || (d.off == true && isStaff()));     /* « carte officielle » : staff uniquement */
+    }
+    /* compteurs ❤ / ▶ / 🚩 : +1 à la fois, rien d'autre ne change */
+    function bump(f) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([f])
+        && request.resource.data[f] == resource.data[f] + 1;
+    }
+    match /maps/{id} {
+      allow read: if true;
+      allow create: if validMap(request.resource.data);
+      allow update: if bump('likes') || bump('plays') || bump('rep') || isStaff();
+      allow delete: if isStaff() || (signedIn() && resource.data.aid == request.auth.uid);
+    }
+
+    /* ---------- cartes privées : lisibles seulement si on connaît le code (pas de liste) ---------- */
+    function validPriv(d) {
+      return d.keys().hasOnly(['name','author','aid','small','dp','n','objs','ts','tw','twr','tf'])
+        && d.keys().hasAll(['name','author','aid','small','dp','n','objs','ts'])
+        && validMapBase(d);
+    }
+    match /privmaps/{code} {
+      allow get: if true;
+      allow list: if isStaff();
+      allow create: if code.matches('^[A-HJKMNP-Z2-9]{8}$') && validPriv(request.resource.data);
+      allow update: if isStaff();
+      /* suppression : le propriétaire connecté, le staff, ou (carte publiée en invité) quelqu'un qui connaît le code */
+      allow delete: if isStaff()
+        || (signedIn() && resource.data.aid == request.auth.uid)
+        || isGuestId(resource.data.aid);
+    }
+
+    /* ---------- bannissements : lecture publique, écriture staff ---------- */
+    match /bans/{id} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+
+    /* ---------- boutique (shop/config) et quêtes (shop/quests) : lecture publique, écriture staff ---------- */
+    match /shop/{id} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+
+    /* ---------- codes créateur ---------- */
+    match /creators/{code} {
+      allow read: if true;
+      allow create, delete: if isStaff();
+      allow update: if isStaff()
+        /* un joueur qui dépense des crédits avec ce code : earned monte, uses +1, rien d'autre */
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['earned','uses'])
+            && request.resource.data.earned > resource.data.earned
+            && request.resource.data.earned - resource.data.earned <= 1000000
+            && request.resource.data.uses == resource.data.uses + 1)
+        /* le créateur récupère ses gains : claimed monte, jamais au-delà de earned */
+        || (signedIn() && request.auth.uid == resource.data.owner
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimed'])
+            && request.resource.data.claimed >= resource.data.claimed
+            && request.resource.data.claimed <= resource.data.earned);
+    }
+
+    /* ---------- demandes de code créateur (id du document = uid du demandeur) ---------- */
+    function validReq(d, uid) {
+      return d.keys().hasOnly(['aid','name','want','link','msg','status','ts'])
+        && d.keys().hasAll(['aid','name','want','link','msg','status','ts'])
+        && d.aid == uid
+        && d.status == 'pending'
+        && d.name is string && d.name.size() <= 12
+        && d.want is string && d.want.matches('^[A-Z0-9_-]{3,16}$')
+        && !exists(/databases/$(database)/documents/creators/$(d.want))
+        && d.link is string && d.link.size() <= 120
+        && d.msg is string && d.msg.size() <= 200
+        && d.ts == request.time;
+    }
+    match /creatorReqs/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isStaff());
+      allow list: if isStaff();
+      allow create, update: if isStaff()
+        || (signedIn() && request.auth.uid == uid
+            && (resource == null || resource.data.status != 'approved')
+            && validReq(request.resource.data, uid));
+      allow delete: if isStaff();
+    }
+
+    /* ---------- codes d'échange ---------- */
+    match /redeemCodes/{code} {
+      allow get: if signedIn();
+      allow list: if isStaff();
+      allow create, delete: if isStaff();
+      allow update: if isStaff()
+        /* un joueur utilise le code : uses +1, dans la limite du maximum et de l'expiration,
+           et SEULEMENT si sa fiche « claims/<son uid> » est créée dans la même transaction (un seul usage par compte) */
+        || (signedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uses'])
+            && request.resource.data.uses == resource.data.uses + 1
+            && (resource.data.get('max', 0) == 0 || resource.data.uses < resource.data.max)
+            && (resource.data.get('exp', 0) == 0 || request.time.toMillis() <= resource.data.exp)
+            && existsAfter(/databases/$(database)/documents/redeemCodes/$(code)/claims/$(request.auth.uid)));
+
+      match /claims/{uid} {
+        allow get: if signedIn() && (request.auth.uid == uid || isStaff());
+        allow list: if isStaff();
+        allow create: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['ts'])
+          && request.resource.data.ts == request.time;
+        allow delete: if isStaff();
+      }
+    }
+
+    /* ---------- verrou d'activation ---------- */
+    match /config/launch {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    match /config/codes {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    /* lisible UNIQUEMENT après la date d'ouverture (heure du serveur) */
+    match /config/open {
+      allow get: if request.time >= get(/databases/$(database)/documents/config/launch).data.at;
+      allow write: if isStaff();
+    }
+
+    /* tout le reste est interdit */
+  }
+}

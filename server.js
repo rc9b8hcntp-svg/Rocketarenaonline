@@ -5,7 +5,7 @@
    - Groupes (4 joueurs max) : invitations entre amis ; les matchs privés ne se lancent QU'À PLUSIEURS, depuis un groupe
    - Relais des messages de jeu (entrées, snapshots, buts) entre les joueurs d'une salle
    - Sert aussi le jeu (dossier public/) pour que tout tienne dans un seul service */
-const http = require('http'), crypto = require('crypto'), fs = require('fs'), path = require('path');
+const http = require('http'), crypto = require('crypto'), fs = require('fs'), path = require('path'), zlib = require('zlib');
 
 const PORT = +process.env.PORT || 8080;
 const FILL_S = +process.env.FILL_SECONDS || 20;          // attente avant de compléter avec des bots (hors classé)
@@ -22,10 +22,13 @@ const MAP_LIST = ['champ', 'mann', 'neo', 'utopia', 'waste', 'urban', 'beck', 'f
 const randomMap = () => MAP_LIST[crypto.randomInt(MAP_LIST.length)];
 const PARTY_MAX = 4, MAX_FRIENDS = 100, MAX_REQ = 50, INVITE_S = 60;
 
+const logErr = (where, e) => console.error('[' + new Date().toISOString() + '] ' + where + ' :', (e && e.stack) || e);
+
 const MODES = { casual: [1, 2, 3], big: [4], ranked: [1, 2, 3], rk_hoops: [2], rk_rumble: [3], rk_drop: [3], rk_snow: [3], rk_heat: [2],
   hoops: [1, 2, 3], rumble: [2, 3], drop: [2, 3], snow: [1, 2, 3], heat: [1, 2, 3] };
 const isRanked = k => k === 'ranked' || k.indexOf('rk_') === 0;
-const validMode = (k, s) => typeof k === 'string' && MODES[k] && MODES[k].indexOf(s) >= 0;
+/* hasOwnProperty : sans ça, k = "constructor" / "__proto__" faisait planter tout le serveur (MODES[k].indexOf n'existe pas) */
+const validMode = (k, s) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(MODES, k) && MODES[k].indexOf(s) >= 0;
 
 let nextId = 0;
 const conns = new Set();
@@ -61,8 +64,8 @@ class Conn {
     this.tokens = 400; this.tt = Date.now(); this.lastPong = Date.now();
     this.tok = crypto.randomBytes(8).toString('hex'); this.bye = false; this.ghostT = null; this.moved = false;
     this.uid = null; this.acct = null; this.party = null; this.ptm = 0; this.lastSt = null;   // tok : jeton de reprise de session
-    sock.setNoDelay(true); sock.setKeepAlive(true, 10000);
-    sock.on('data', d => this.data(d));
+    sock.setNoDelay(true); sock.setKeepAlive(true, 10000); sock.setTimeout(0);
+    sock.on('data', d => { try { this.data(d); } catch (e) { logErr('data', e); this.kill(); } });
     /* Les sockets HTTP de Node sont en « half-open » : quand le client coupe, 'close' n'arrive pas tout de suite
        (parfois jamais avant 60 s) et le joueur restait fantôme dans le match. 'end' = le client a coupé : on le traite tout de suite. */
     sock.on('end', () => this.close());
@@ -70,6 +73,8 @@ class Conn {
     sock.on('error', () => this.close());
   }
   data(d) {
+    if (!this.alive) return;
+    this.lastPong = Date.now();                              // n'importe quel octet reçu prouve que le client est vivant
     this.buf = Buffer.concat([this.buf, d]);
     if (this.buf.length > 262144) return this.kill();
     for (;;) {
@@ -85,8 +90,12 @@ class Conn {
     if (f.op === 8) { this.kill(); return; }
     if (f.op === 9) { this.write(10, f.p); return; }
     if (f.op === 10) { this.lastPong = Date.now(); return; }
-    if (f.op === 1) { if (f.fin) return this.msg(f.p.toString('utf8')); this.frag = [f.p]; return; }
-    if (f.op === 0 && this.frag) { this.frag.push(f.p); if (f.fin) { const s = Buffer.concat(this.frag).toString('utf8'); this.frag = null; this.msg(s); } }
+    if (f.op === 1) { if (f.fin) return this.msg(f.p.toString('utf8')); this.frag = [f.p]; this.fragN = f.p.length; return; }
+    if (f.op === 0 && this.frag) {
+      this.frag.push(f.p); this.fragN += f.p.length;
+      if (this.fragN > 4 * MAXMSG) return this.kill();       // message fragmenté sans fin : on coupe (mémoire)
+      if (f.fin) { const s = Buffer.concat(this.frag).toString('utf8'); this.frag = null; this.msg(s); }
+    }
   }
   write(op, p) {
     if (!this.alive) return;
@@ -105,6 +114,7 @@ class Conn {
   close() {
     if (this.ghostT || this.moved) return;
     if (!this.alive && !conns.has(this)) return;
+    try { this.s.destroy(); } catch (e) {}                   // le socket est mort ou à moitié fermé : on le libère toujours (sinon fuite de sockets)
     /* coupure réseau (pas un départ volontaire, pas un kill du serveur) pendant un salon / un match :
        on garde la place GRACE secondes, le client peut se reconnecter et reprendre exactement où il en était */
     if (this.alive && !this.bye && (this.room || this.party)) {
@@ -126,10 +136,11 @@ class Conn {
   msg(str) {
     const now = Date.now();
     this.tokens = Math.min(400, this.tokens + (now - this.tt) * 0.2); this.tt = now;   // ~200 msg/s soutenus
-    if (--this.tokens < 0) return this.kill();
+    if (--this.tokens < -400) return this.kill();            // flood massif : on coupe
+    if (this.tokens < 0) return;                             // petit pic (onglet qui reprend, lag) : on ignore le message au lieu de virer le joueur
     let m; try { m = JSON.parse(str); } catch (e) { return; }
-    if (!m || typeof m.t !== 'string') return;
-    handle(this, m, str);
+    if (!m || typeof m !== 'object' || typeof m.t !== 'string') return;
+    try { handle(this, m, str); } catch (e) { logErr('handle:' + m.t, e); }   // un message mal formé ne doit jamais faire tomber le serveur
   }
 }
 
@@ -156,7 +167,13 @@ function loadAccounts() {
   try {
     const d = JSON.parse(fs.readFileSync(ACC_FILE, 'utf8'));
     for (const a of d.accounts || []) { if (!a || !a.uid || !a.code) continue; a.friends = a.friends || []; a.inc = a.inc || []; a.out = a.out || []; accounts.set(a.uid, a); byFCode.set(a.code, a); }
-  } catch (e) { if (e.code !== 'ENOENT') console.error('Lecture des comptes impossible :', e.message); }
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      console.error('Lecture des comptes impossible :', e.message);
+      /* fichier corrompu : on le met de côté AVANT qu'une sauvegarde ne l'écrase par une liste vide (perte de tous les amis) */
+      try { fs.renameSync(ACC_FILE, ACC_FILE + '.corrupt-' + Date.now()); } catch (e2) {}
+    }
+  }
 }
 let saveT = null;
 function saveAccounts() {
@@ -169,6 +186,7 @@ function saveNow() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const tmp = ACC_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify({ v: 1, accounts: [...accounts.values()] }));
+    try { fs.copyFileSync(ACC_FILE, ACC_FILE + '.bak'); } catch (e) {}   // dernière version saine conservée
     fs.renameSync(tmp, ACC_FILE);
   } catch (e) { console.error('Sauvegarde des comptes impossible :', e.message); }
 }
@@ -181,9 +199,16 @@ async function getCerts(force) {
   if (!force && certs && Date.now() < certsExp) return certs;
   if (certsP) return certsP;
   certsP = (async () => {
-    const r = await fetch(CERT_URL); if (!r.ok) throw new Error('certificats ' + r.status);
-    const m = /max-age=(\d+)/.exec(r.headers.get('cache-control') || '');
-    certs = await r.json(); certsExp = Date.now() + (m ? +m[1] : 3600) * 1000; return certs;
+    try {
+      /* timeout : sans lui, un Google qui ne répond pas laissait TOUTES les connexions de compte en attente indéfiniment */
+      const r = await fetch(CERT_URL, { signal: AbortSignal.timeout(8000) }); if (!r.ok) throw new Error('certificats ' + r.status);
+      const m = /max-age=(\d+)/.exec(r.headers.get('cache-control') || '');
+      certs = await r.json(); certsExp = Date.now() + (m ? +m[1] : 3600) * 1000; return certs;
+    } catch (e) {
+      logErr('certificats Google', e);
+      if (certs) { certsExp = Date.now() + 60000; return certs; }   // panne passagère : on garde les anciens certificats (déjà vérifiés) et on réessaie dans 1 min
+      throw e;
+    }
   })().finally(() => { certsP = null; });
   return certsP;
 }
@@ -283,7 +308,7 @@ function tickQueues() {
 function startQueueMatch(k, size, group) {
   const players = [];
   for (const e of group) for (const c of e.cs) if (players.indexOf(c) < 0) players.push(c);
-  for (const c of players) unqueue(c);
+  for (const c of players) { unqueue(c); if (c.room) leaveRoom(c); }   // un coéquipier de groupe pouvait rester inscrit dans son ancien match et recevoir ses messages
   const room = { players: new Map(), host: 0, priv: false, state: 'play', cfg: { mode: k, size, dur: isRanked(k) ? 5 : 3 }, code: null, party: null, map: randomMap() };   // la map est tirée au sort par le serveur : la même pour tous les joueurs
   rooms.add(room);
   const cnt = [0, 0], mm = [0, 0], pe = group.filter(e => e.n > 1), asg = packTeams(pe, size) || new Map();
@@ -308,6 +333,10 @@ function launch(room) {
 function adopt(old, c) {
   clearTimeout(old.ghostT); old.ghostT = null; old.moved = true; ghosts.delete(old.id); conns.delete(old);
   c.id = old.id; c.tok = old.tok; c.room = old.room; c.team = old.team; c.ptm = old.ptm;
+  if (old.qkeys.length) {                                   // recherche de match en cours : la file doit pointer vers la NOUVELLE connexion (sinon le match démarrait avec un joueur mort)
+    for (const k of old.qkeys) { const L = queues.get(k); if (L) for (const e of L) { const i = e.cs.indexOf(old); if (i >= 0) e.cs[i] = c; } }
+    c.qkeys = old.qkeys; old.qkeys = [];
+  }
   if (c.room) c.room.players.set(c.id, c);
   c.party = old.party; if (c.party) c.party.members.set(c.id, c);
   c.uid = old.uid; c.acct = old.acct; if (c.uid) online.set(c.uid, c);
@@ -319,7 +348,10 @@ function leaveRoom(c) {
   const room = c.room; if (!room) return;
   c.room = null; room.players.delete(c.id);
   if (!room.players.size) { rooms.delete(room); if (room.party) { room.party.state = 'lobby'; partyBcast(room.party); } if (c.party) partyBcast(c.party); return; }
-  if (room.host === c.id) room.host = room.players.keys().next().value;
+  if (room.host === c.id) {                                  // nouvel hôte : de préférence un joueur réellement connecté
+    let h = null; for (const o of room.players.values()) { if (o.alive) { h = o; break; } }
+    room.host = h ? h.id : room.players.keys().next().value;
+  }
   const s = JSON.stringify({ t: 'left', id: c.id, host: room.host }); for (const o of room.players.values()) o.raw(s);
   if (c.party) partyBcast(c.party);
 }
@@ -400,8 +432,16 @@ function unbind(c, silent) {
 }
 function doAuth(c, m) {
   profile(c, m);
-  verifyIdToken(m.auth).then(u => { if (c.alive) bindAcct(c, u.uid, m.name); })
-    .catch(e => { c.send({ t: 'acct', uid: null, err: 1 }); });
+  if (c.authing) return;                                     // une vérification est déjà en cours pour cette connexion
+  c.authing = true;
+  verifyIdToken(m.auth).then(u => {
+    c.authing = false;
+    if (c.alive) { try { bindAcct(c, u.uid, m.name); } catch (e) { logErr('bindAcct', e); c.send({ t: 'acct', uid: null, err: 1 }); } }
+  }, e => {
+    c.authing = false;
+    if (!/format|algorithme|signature|jeton refusé|clé inconnue/.test(String(e && e.message))) logErr('auth', e);   // erreurs réseau seulement (un jeton invalide est normal)
+    c.send({ t: 'acct', uid: null, err: 1 });
+  });
 }
 
 /* ---------- groupes ---------- */
@@ -486,13 +526,23 @@ function handle(c, m, str) {
   if (RELAY_ALL[t] || RELAY_HOST[t]) {
     const r = c.room; if (!r || r.state !== 'play') return;
     if (RELAY_HOST[t] && c.id !== r.host) return;
-    for (const o of r.players.values()) if (o !== c) o.raw(str);
+    const b = Buffer.from(str), lossy = t === 'in' || t === 'snap';     // encodé une seule fois pour tous les joueurs
+    for (const o of r.players.values()) {
+      if (o === c || !o.alive) continue;
+      if (lossy && o.s.writableLength > 131072) continue;    // client lent : on saute les messages périmés plutôt que de le déconnecter
+      o.write(1, b);
+    }
     return;
   }
   switch (t) {
     case 'hello': {
       profile(c, m);
-      const rs = m.resume && typeof m.resume === 'object' ? m.resume : null, g = rs && ghosts.get(rs.id);
+      const rs = m.resume && typeof m.resume === 'object' ? m.resume : null;
+      let g = rs && ghosts.get(rs.id);
+      if (!g && rs && typeof rs.tok === 'string') {           // le serveur n'a pas encore vu l'ancien socket mourir (connexion « à moitié ouverte ») : le jeton secret prouve que c'est le même joueur
+        for (const o of conns) if (o !== c && o.id === rs.id && o.tok === rs.tok && o.alive) { g = o; break; }
+        if (g) { g.alive = false; g.bye = true; try { g.s.destroy(); } catch (e) {} }
+      }
       if (g && g.tok === rs.tok && (g.room || g.party)) {     // le joueur revient après une coupure : il retrouve sa place
         adopt(g, c);
         c.send({ t: 'welcome', id: c.id, on: conns.size, tok: c.tok, resumed: 1 });
@@ -577,16 +627,36 @@ const server = http.createServer((req, res) => {
   }
   if (p === '/') p = '/index.html';
   let f = path.join(PUB, path.normalize(p));
-  if (f.indexOf(PUB) !== 0) { res.writeHead(403); return res.end(); }
+  if (f !== PUB && f.indexOf(PUB + path.sep) !== 0) { res.writeHead(403); return res.end(); }   // « + path.sep » : sans lui, /../public-xyz/ passait le test
   if (p === '/index.html' && !fs.existsSync(f)) f = path.join(__dirname, 'index.html');   // mise à plat : index.html à côté de server.js
-  fs.readFile(f, (e, d) => {
-    if (e) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('Rocket Arena matchmaking server – OK (mets le jeu dans public/index.html pour le servir ici)'); }
-    const ext = path.extname(f).toLowerCase();
-    res.writeHead(200, { 'Content-Type': TYPES[ext] || 'application/octet-stream', 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' });
-    res.end(d);
-  });
+  sendFile(req, res, f);
 });
+/* fichiers statiques : lus une fois, gardés en mémoire (relus si modifiés) et envoyés compressés (index.html ≈ 800 Ko → ≈ 200 Ko) */
+const fcache = new Map();
+function sendFile(req, res, f) {
+  fs.stat(f, (e, st) => {
+    if (e || !st.isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Rocket Arena matchmaking server – OK (mets le jeu dans public/index.html pour le servir ici)'); }
+    const ext = path.extname(f).toLowerCase(), hit = fcache.get(f);
+    const go = ent => {
+      const gz = ent.gz && /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+      const h = { 'Content-Type': TYPES[ext] || 'application/octet-stream', 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600', 'Vary': 'Accept-Encoding' };
+      if (gz) h['Content-Encoding'] = 'gzip';
+      res.writeHead(200, h); res.end(req.method === 'HEAD' ? undefined : (gz ? ent.gz : ent.raw));
+    };
+    if (hit && hit.m === st.mtimeMs) return go(hit);
+    fs.readFile(f, (e2, d) => {
+      if (e2) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('introuvable'); }
+      const ent = { m: st.mtimeMs, raw: d, gz: null };
+      if (/^\.(html|js|css|json|svg)$/.test(ext) && d.length > 1024) { try { ent.gz = zlib.gzipSync(d, { level: 6 }); } catch (e3) {} }
+      if (d.length < 4 * 1024 * 1024) fcache.set(f, ent);
+      go(ent);
+    });
+  });
+}
+server.on('clientError', (err, sock) => { try { if (sock.writable) sock.end('HTTP/1.1 400 Bad Request\r\n\r\n'); else sock.destroy(); } catch (e) {} });
+server.on('error', e => { logErr('serveur HTTP', e); if (e && e.code === 'EADDRINUSE') process.exit(1); });
 server.on('upgrade', (req, sock) => {
+  sock.on('error', () => {});                                // sans écouteur, une coupure brutale (ECONNRESET) pendant la poignée de main faisait planter tout le serveur
   const key = req.headers['sec-websocket-key'], origin = req.headers.origin;
   if (!key || String(req.headers.upgrade).toLowerCase() !== 'websocket' || conns.size >= MAX_CONN ||
       (ORIGINS.length && origin && ORIGINS.indexOf(origin) < 0)) { sock.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return sock.destroy(); }
@@ -595,15 +665,27 @@ server.on('upgrade', (req, sock) => {
   conns.add(new Conn(sock));
 });
 
+/* chaque tâche périodique est isolée : une erreur imprévue dans l'une d'elles ne doit jamais arrêter les autres ni le serveur */
+const every = (name, ms, fn) => setInterval(() => { try { fn(); } catch (e) { logErr(name, e); } }, ms);
 loadAccounts();
-setInterval(tickQueues, 1000);
-setInterval(tickSocial, 2000);
-setInterval(() => {                                          // keep-alive + nettoyage des connexions mortes
+every('tickQueues', 1000, tickQueues);
+every('tickSocial', 2000, tickSocial);
+every('keepalive', 10000, () => {                            // keep-alive + nettoyage des connexions mortes
   const now = Date.now();
-  for (const c of [...conns]) { if (now - c.lastPong > 30000) c.drop(); else c.write(9, Buffer.alloc(0)); }
-}, 10000);
+  for (const c of [...conns]) { if (now - c.lastPong > 40000) c.drop(); else c.write(9, Buffer.alloc(0)); }
+});
+/* hébergeur gratuit qui s'endort (Render…) : le serveur se « visite » lui-même toutes les 10 min (RENDER_EXTERNAL_URL est fourni par Render ; KEEPALIVE_URL pour un autre hébergeur) */
+const SELF_URL = process.env.KEEPALIVE_URL || process.env.RENDER_EXTERNAL_URL || '';
+if (SELF_URL && require.main === module) every('auto-ping', 600000, () => { fetch(SELF_URL.replace(/\/$/, '') + '/health', { signal: AbortSignal.timeout(10000) }).catch(() => {}); });
+
+/* dernier filet de sécurité : on journalise et on continue, au lieu de couper tous les joueurs d'un coup */
+let crashes = 0;
+process.on('uncaughtException', e => { logErr('uncaughtException', e); if (++crashes > 50) { saveNow(); process.exit(1); } });
+process.on('unhandledRejection', e => { logErr('unhandledRejection', e); });
+setInterval(() => { crashes = 0; }, 600000).unref();
 
 if (require.main === module) server.listen(PORT, () => console.log('Matchmaking Rocket Arena sur le port ' + PORT));
-process.on('SIGTERM', () => { saveNow(); process.exit(0); });
-process.on('SIGINT', () => { saveNow(); process.exit(0); });
+const bye = () => { saveNow(); process.exit(0); };
+process.on('SIGTERM', bye);
+process.on('SIGINT', bye);
 module.exports = { server, tickQueues, tickSocial, saveNow, _setCerts: f => { certOverride = f; }, _accounts: accounts };
