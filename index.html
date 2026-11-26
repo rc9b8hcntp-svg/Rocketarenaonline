@@ -1442,6 +1442,9 @@ IT['fin:0'].price=0;IT['fin:1'].price=0;
 /* ---------- OBJETS SECRETS : hors LST, donc jamais dans la boutique, les caisses, les lots ni le Rocket Pass ; débloqués uniquement par le secret (voir « SECRET » plus bas) ---------- */
 const SECRET_ITEMS=[];
 {const it={id:'car:100',cat:'car',i:100,n:'Oméga X',r:5,price:99999,secret:true,sub:'Futuriste • Hitbox '+HB.brk.n,hb:'brk'};IT[it.id]=it;SECRET_ITEMS.push(it);}
+/* boost du staff : des boucliers sortent de l'arrière de la voiture ; obtenu en gagnant un match en ligne avec ou contre un membre du staff (voir staffBoostCheck) */
+const STAFF_BOOST='boost:100';
+{const it={id:STAFF_BOOST,cat:'boost',i:100,n:'Boucliers du staff',r:5,price:99999,secret:true,sub:'Gagne un match avec ou contre un membre du staff',bd:{c1:'#3fa9ff',c2:'#ffd23f',k:'shield'}};IT[it.id]=it;SECRET_ITEMS.push(it);}
 
 /* ---------- paramètres de chaque voiture (silhouette + détails) ---------- */
 const CARP={};
@@ -2995,6 +2998,30 @@ function cssRGB(s){const n=hexN(s);return [((n>>16)&255)/255,((n>>8)&255)/255,(n
 function boostFx(i){const bd=IT['boost:'+i].bd;return {k:bd.k,c1:cssRGB(bd.c1),c2:cssRGB(bd.c2)};}
 function trailFx(i){const td=IT['trail:'+i].td;return {k:td.k,cols:td.col.map(cssRGB)};}
 const _bfxTmp=new T.Vector3();
+/* boost « Boucliers » : de vrais écus 3D (liseré + champ + croix) lâchés derrière la voiture, qui tournent en s'estompant */
+let _shG=null;
+function shieldGeo(){
+  if(_shG)return _shG;
+  const outline=(P,k)=>{const w=.5*k,h=.62*k;P.moveTo(-w,h*.72);P.lineTo(-w*.82,h);P.lineTo(w*.82,h);P.lineTo(w,h*.72);P.lineTo(w,h*.1);P.quadraticCurveTo(w*.9,-h*.55,0,-h);P.quadraticCurveTo(-w*.9,-h*.55,-w,h*.1);P.closePath();return P;};
+  const rim=outline(new T.Shape(),1);rim.holes.push(outline(new T.Path(),.78));
+  _shG={rim:new T.ShapeGeometry(rim),field:new T.ShapeGeometry(outline(new T.Shape(),.74)),bv:new T.PlaneGeometry(.1,.78),bh:new T.PlaneGeometry(.5,.1)};
+  return _shG;
+}
+function spawnShield(c,f){
+  const G=shieldGeo(),fw=c.fwd,rt=c.right,up=c.up,sd=rnd()<.5?-1:1;
+  const mk=(g,col,op)=>{const m=new T.Mesh(g,new T.MeshBasicMaterial({color:new T.Color(col[0],col[1],col[2]),transparent:true,opacity:op,blending:T.AdditiveBlending,depthWrite:false,side:T.DoubleSide,fog:false}));m.userData.op=op;return m;};
+  const grp=new T.Group(),piv=new T.Group();grp.add(piv);
+  piv.add(mk(G.rim,f.c2,.95));const fl=mk(G.field,f.c1,.42);fl.position.z=-.004;piv.add(fl);
+  const bv=mk(G.bv,f.c2,.6),bh=mk(G.bh,f.c2,.6);bv.position.set(0,0,.004);bh.position.set(0,.2,.004);piv.add(bv);piv.add(bh);
+  grp.position.copy(_bfxTmp).addScaledVector(up,.35).addScaledVector(rt,(rnd()-.5)*.5);
+  const bx=new T.Matrix4().makeBasis(rt,up,new T.Vector3(-fw.x,-fw.y,-fw.z));grp.quaternion.setFromRotationMatrix(bx);
+  const sc0=1.15+rnd()*.35;grp.scale.setScalar(sc0);
+  const vel=new T.Vector3(-fw.x*9+rt.x*(rnd()-.5)*2,-fw.y*9+(rnd()-.5)*1.2,-fw.z*9+rt.z*(rnd()-.5)*2);
+  addFxObj({m:grp,sc:fxScene(),life:.75,vel:vel,g:0,upd:(o,dt,k)=>{
+    piv.rotation.y=o.t*sd*5;const a=Math.pow(1-k,1.2);o.m.scale.setScalar(sc0*(.85+.55*k));
+    piv.children.forEach(m=>{m.material.opacity=m.userData.op*a;});
+  },die:o=>{o.m.traverse(n=>{if(n.material)n.material.dispose();});}});
+}
 function boostEmit(c,sup){
   const f=c.bfx,fw=c.fwd;
   _bfxTmp.copy(c.pos).addScaledVector(fw,-2.3);
@@ -3010,6 +3037,7 @@ function boostEmit(c,sup){
     case 'pixel':col=rnd()<.5?f.c1:f.c2;sprd=2;life=.4;break;
     case 'snow':col=f.c2;gr=3;life=.8;sp=4;sprd=5;break;
     case 'heart':col=rnd()<.5?f.c1:f.c2;gr=-2;life=.7;sp=5;sprd=4;break;
+    case 'shield':{col=rnd()<.5?f.c1:f.c2;sprd=3;life=.25;const nw=performance.now();if(!c._shT||nw-c._shT>85){c._shT=nw;try{spawnShield(c,f);}catch(e){}}break;}
     default:col=sup?[.7,.8,1]:f.c1;
   }
   emit(_bfxTmp.x,_bfxTmp.y,_bfxTmp.z,-fw.x*sp+(rnd()-.5)*sprd,-fw.y*sp+(rnd()-.5)*sprd,-fw.z*sp+(rnd()-.5)*sprd,col[0],col[1],col[2],life,gr);
@@ -4613,6 +4641,10 @@ function th2d(it){
     x.fillStyle=g;x.beginPath();x.moveTo(30,50);x.quadraticCurveTo(110,30,185,62);x.quadraticCurveTo(110,94,30,74);x.closePath();x.fill();
     const rg=mulberry(it.i*13+1);for(let k=0;k<30;k++){x.fillStyle='rgba('+css(rg()<.5?b.c1:b.c2)+','+(.3+rg()*.6)+')';const s=1+rg()*3;x.fillRect(60+rg()*130,35+rg()*54,s,s);}
     x.fillStyle='#9aa5b8';x.fillRect(10,48,24,28);
+    if(b.k==='shield')for(let q=0;q<3;q++){const cx=62+q*44,cy=62,w=13-q*2,h=17-q*2.5;x.globalAlpha=1-q*.28;
+      x.beginPath();x.moveTo(cx-w,cy-h*.6);x.lineTo(cx-w*.8,cy-h);x.lineTo(cx+w*.8,cy-h);x.lineTo(cx+w,cy-h*.6);x.lineTo(cx+w,cy-h*.1);x.quadraticCurveTo(cx+w*.9,cy+h*.55,cx,cy+h);x.quadraticCurveTo(cx-w*.9,cy+h*.55,cx-w,cy-h*.1);x.closePath();
+      x.fillStyle='rgba('+css(b.c1)+',.55)';x.fill();x.lineWidth=2.4;x.strokeStyle='rgb('+css(b.c2)+')';x.stroke();
+      x.beginPath();x.moveTo(cx,cy-h*.7);x.lineTo(cx,cy+h*.6);x.moveTo(cx-w*.5,cy-h*.15);x.lineTo(cx+w*.5,cy-h*.15);x.lineWidth=1.6;x.stroke();x.globalAlpha=1;}
   }else if(it.cat==='expl'){
     const e=it.ed,cols=e.col.map(s=>s==='t'?'#4a9bff':s),rg=mulberry(it.i*7+3);
     for(let k=0;k<44;k++){const a=rg()*6.283,r=14+rg()*48;x.fillStyle=cols[k%cols.length];x.globalAlpha=.4+rg()*.6;const s=2+rg()*3;x.fillRect(100+Math.cos(a)*r,62+Math.sin(a)*r*.8,s,s);}
@@ -5136,6 +5168,7 @@ const GATE={on:false,
 if(window.RA_FB||window.RA_FB_ERR)CLOUD.init();else window.addEventListener('ra-fb',()=>CLOUD.init());
 /* NEWS : à CHAQUE mise à jour du jeu, on ajoute une entrée EN HAUT de cette liste (la plus récente en premier), avec sa date dans « d » */
 const NEWS=[
+  {d:'25/11/2026',t:'Boost Boucliers du staff',b:'Nouveau boost : des boucliers sortent de l\'arrière de ta voiture quand tu boostes. Pour l\'obtenir, gagne un match en ligne avec ou contre un membre du staff.',go:['locker','Voir le casier']},
   {d:'25/11/2026',t:'Bugatti RND + Renard croqueur',b:'Le pack Renard Néon RND a une nouvelle voiture, la Bugatti RND (hypercar large avec calandre en fer à cheval et ligne en C). Son explosion de but, « Renard croqueur », fait surgir un grand renard du but : il ouvre la gueule et croque deux fois avant de rentrer.',go:['locker','Voir le casier']},
   {d:'25/11/2026',t:'Tag CRÉATEUR',b:'Les joueurs qui ont un code créateur ont maintenant un tag CRÉATEUR : il s\'affiche à côté de leur nom sur l\'écran « Match trouvé », visible par tous les joueurs du match.'},
   {d:'25/11/2026',t:'Logo RND sur le capot',b:'Dans le pack Renard, le logo RND est maintenant bien visible sur le capot de la voiture : plus grand, relevé vers l\'avant et en meilleure qualité.',go:['lobby','Voir ma voiture']},
@@ -8760,10 +8793,17 @@ function afterGoal(){
   if(overtime||(timeLeft<=0&&scores[0]!==scores[1])||(MUT.limit>0&&(scores[0]>=MUT.limit||scores[1]>=MUT.limit))){endMatch();return;}
   kickoff();
 }
+/* boost « Boucliers du staff » : victoire en ligne avec ou contre un membre du staff (resté dans le match) */
+function staffBoostCheck(win){
+  if(!win||!NET.on||!NET.roster||owns(STAFF_BOOST))return false;
+  if(!NET.roster.some(p=>!p.me&&p.st&&!(NET.gone&&NET.gone.has(p.id))))return false;
+  SV.owned[STAFF_BOOST]=1;saveSV();try{SFX.goal();}catch(e){}return true;
+}
 function endMatch(){
   if(NET.on&&NET.host&&!NET.ended){NET.ended=1;NET.sendEnd();}
   phase='over';phaseT=0;clearMsg();clearPowers();
   const w=scores[0]>scores[1]?0:(scores[1]>scores[0]?1:-1),mine=player?player.team:0,win=w===mine;
+  let stfNew=false;try{stfNew=staffBoostCheck(win);}catch(e){}
   el.endT.textContent=win?'VICTOIRE !':'DÉFAITE';el.endT.style.color=win?'#7dffb0':'#ff8a8a';
   el.endS.textContent='BLEU '+scores[0]+' – '+scores[1]+' ORANGE';
   {const pool=cars.filter(c=>w<0||c.team===w).sort((x,y)=>y.stats.score-x.stats.score);if(pool[0])el.endS.textContent+='  •  ⭐ MVP : '+pool[0].name+' ('+pool[0].stats.score+')';}
@@ -8774,6 +8814,7 @@ function endMatch(){
   if(rew.levelUp)h+='<span class="up">NIVEAU '+lvlOf(SV.xp)+' !</span>';
   if(rew.rank)h+='<span style="color:'+rew.rank.c+'">'+rew.rank.n+(rew.rank.un?' – placement '+(PLACE_N-rew.rank.left)+' / '+PLACE_N:' ('+(rew.mmr>0?'+':'')+rew.mmr+')')+'</span>';
   if(rew.item)h+='<span class="up">🎁 '+esc(rew.item.n)+'</span>';
+  if(stfNew)h+='<span class="up">🛡️ Boost « Boucliers du staff » débloqué !</span>';
   if(rew.ndDone)h+='<span class="up">New Driver terminé • rang de départ : '+esc(rankOf(SV.ndStart||520).n)+'</span>';
   rew.tier.forEach(r=>{h+='<span class="up">Passe : '+(r.type==='cr'?'+'+r.val+' 💰':esc(IT[r.val].n))+'</span>';});
   h+='</div>';
@@ -9544,7 +9585,7 @@ Object.assign(NET,{
     return u.replace(/^http/,'ws');
   },
   mmrNow(){try{const m=SV.menu,k=isRk(m.mode)?m.mode:'ranked';return mmrOf(rkKey(k,modeSize(k)));}catch(e){return 500;}},
-  prof(){return {name:SV.name||'Joueur',L:SV.iscr?Object.assign({cr:1},SV.load):SV.load,mmr:NET.mmrNow()};},
+  prof(){let L=SV.load;if(SV.iscr||BAN.isStaff()){L=Object.assign({},SV.load);if(SV.iscr)L.cr=1;if(BAN.isStaff())L.st=1;}return {name:SV.name||'Joueur',L:L,mmr:NET.mmrNow()};},
   send(o){const w=NET.ws;if(w&&w.readyState===1)try{w.send(JSON.stringify(o));}catch(e){}},
   connect(){
     if(NET.ws&&NET.ws.readyState===1)return Promise.resolve(true);
@@ -9641,7 +9682,7 @@ Object.assign(NET,{
   /* ---------- début de match ---------- */
   begin(m){
     clearInterval(NET.qiv);
-    NET.roster=m.players.map(p=>({id:p.id,name:p.name,team:p.team,slot:p.slot,L:p.L,mmr:p.mmr,me:p.id===m.you,cr:!!(p.L&&p.L.cr===1)||(p.id===m.you&&!!SV.iscr)}));
+    NET.roster=m.players.map(p=>({id:p.id,name:p.name,team:p.team,slot:p.slot,L:p.L,mmr:p.mmr,me:p.id===m.you,cr:!!(p.L&&p.L.cr===1)||(p.id===m.you&&!!SV.iscr),st:!!(p.L&&p.L.st===1)||(p.id===m.you&&BAN.isStaff())}));
     const me=NET.roster.find(p=>p.me);if(!me)return;
     NET.me=m.you;NET.hostId=m.host;NET.host=m.host===m.you;NET.gone=new Set();NET.ended=0;NET.kind=m.priv?'room':'queue';NET.tIn=NET.tSn=0;
     setCfg(m.cfg.mode);cfg.size=m.cfg.size;cfg.dur=m.cfg.dur;cfg.team=me.team;cfg.party=[];cfg.partySk=[];cfg.lg=false;cfg.mut=null;
