@@ -450,7 +450,7 @@ function partyView(p) {
   let state = 'lobby';
   if (p.state === 'match' || ms.some(busy)) state = 'match'; else if (lead && lead.qkeys.length) state = 'queue';
   return { id: p.id, leader: p.leader, state, cfg: p.cfg,
-    members: ms.map(m => ({ id: m.id, uid: m.uid, name: m.acct ? m.acct.name : m.name, team: m.ptm, mmr: m.mmr })),
+    members: ms.map(m => ({ id: m.id, uid: m.uid, name: m.acct ? m.acct.name : m.name, team: m.ptm, mmr: m.mmr, L: m.L || {} })),
     inv: [...p.inv.keys()].map(u => ({ uid: u, name: nameOf(u) })) };
 }
 function partyBcast(p) { const s = JSON.stringify({ t: 'party', party: partyView(p) }); for (const m of p.members.values()) m.raw(s); }
