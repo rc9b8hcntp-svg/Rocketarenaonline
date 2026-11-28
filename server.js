@@ -50,6 +50,7 @@ function parseFrame(b) {
   if (len === 126) { if (b.length < 4) return null; len = b.readUInt16BE(2); o = 4; }
   else if (len === 127) { if (b.length < 10) return null; if (b.readUInt32BE(2)) return { bad: true }; len = b.readUInt32BE(6); o = 10; }
   if (len > MAXMSG) return { bad: true };
+  if (!masked) return { bad: true };                         // RFC 6455 : un client masque toujours ses trames
   let mask = null;
   if (masked) { if (b.length < o + 4) return null; mask = b.subarray(o, o + 4); o += 4; }
   if (b.length < o + len) return null;
@@ -88,7 +89,7 @@ class Conn {
     }
   }
   frame(f) {
-    if (f.op === 8) { this.kill(); return; }
+    if (f.op === 8) { if (f.p.length) this.kill(); else this.drop(); return; }   // sans code : le client a coupé une connexion muette et va revenir
     if (f.op === 9) { this.write(10, f.p); return; }
     if (f.op === 10) { this.lastPong = Date.now(); return; }
     if (f.op === 1) { if (f.fin) return this.msg(f.p.toString('utf8')); this.frag = [f.p]; this.fragN = f.p.length; return; }
@@ -164,15 +165,16 @@ function newFCode() {                                       // code ami à 8 car
 const fmtCode = c => c.slice(0, 4) + '-' + c.slice(4);
 
 /* ---------- comptes (sauvegarde sur disque) ---------- */
-function loadAccounts() {
+function loadAccounts(file = ACC_FILE) {
   try {
-    const d = JSON.parse(fs.readFileSync(ACC_FILE, 'utf8'));
+    const d = JSON.parse(fs.readFileSync(file, 'utf8'));
     for (const a of d.accounts || []) { if (!a || !a.uid || !a.code) continue; a.friends = a.friends || []; a.inc = a.inc || []; a.out = a.out || []; accounts.set(a.uid, a); byFCode.set(a.code, a); }
   } catch (e) {
     if (e.code !== 'ENOENT') {
       console.error('Lecture des comptes impossible :', e.message);
       /* fichier corrompu : on le met de côté AVANT qu'une sauvegarde ne l'écrase par une liste vide (perte de tous les amis) */
-      try { fs.renameSync(ACC_FILE, ACC_FILE + '.corrupt-' + Date.now()); } catch (e2) {}
+      try { fs.renameSync(file, file + '.corrupt-' + Date.now()); } catch (e2) {}
+      if (file === ACC_FILE) loadAccounts(ACC_FILE + '.bak');   // on repart de la dernière version saine
     }
   }
 }
@@ -194,11 +196,13 @@ function saveNow() {
 
 /* ---------- vérification du jeton Firebase (RS256, certificats Google) ---------- */
 const CERT_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+let certsForced = 0;
 let certs = null, certsExp = 0, certsP = null, certOverride = null;
 async function getCerts(force) {
   if (certOverride) return certOverride();
   if (!force && certs && Date.now() < certsExp) return certs;
   if (certsP) return certsP;
+  if (force && certs) { if (Date.now() - certsForced < 60000) return certs; certsForced = Date.now(); }   // de faux jetons ne doivent pas faire interroger Google en boucle
   certsP = (async () => {
     try {
       /* timeout : sans lui, un Google qui ne répond pas laissait TOUTES les connexions de compte en attente indéfiniment */
@@ -296,10 +300,13 @@ function tickQueues() {
     for (let guard = 0; guard < 20; guard++) {
       const L = queues.get(key); if (!L || !L.length) break;
       L.sort((a, b) => a.since - b.since);
-      const wait = (now - L[0].since) / 1000;
-      const cands = ranked ? L.filter(e => e === L[0] || Math.abs(e.mmr - L[0].mmr) <= 120 + 35 * wait) : L;   // fenêtre de MMR qui s'élargit avec l'attente
-      let group = pickGroup(cands, need, size);
-      if (!group && !ranked && wait >= FILL_S) group = fillGroup(cands, need, size);   // le classé n'est jamais complété
+      let group = null;
+      for (let i = 0; i < L.length && !group; i++) {         // si le plus ancien ne trouve personne, il ne doit pas bloquer les suivants
+        const a = L[i], wait = (now - a.since) / 1000;
+        const cands = [a].concat(L.filter(e => e !== a && (!ranked || Math.abs(e.mmr - a.mmr) <= 120 + 35 * wait)));   // fenêtre de MMR qui s'élargit avec l'attente
+        group = pickGroup(cands, need, size);
+        if (!group && !ranked && wait >= FILL_S) group = fillGroup(cands, need, size);   // le classé n'est jamais complété
+      }
       if (!group) break;
       startQueueMatch(k, size, group);
     }
@@ -349,6 +356,8 @@ function leaveRoom(c) {
   const room = c.room; if (!room) return;
   c.room = null; room.players.delete(c.id);
   if (!room.players.size) { rooms.delete(room); if (room.party && !room.over) { room.party.state = 'lobby'; partyBcast(room.party); } if (c.party) partyBcast(c.party); return; }
+  const gp = room.party;
+  if (gp && !room.over && ![...room.players.values()].some(o => o.party === gp)) { room.over = true; gp.state = 'lobby'; partyBcast(gp); }   // plus aucun membre du groupe dans le match
   if (room.host === c.id) {                                  // nouvel hôte : de préférence un joueur réellement connecté
     let h = null; for (const o of room.players.values()) { if (o.alive) { h = o; break; } }
     room.host = h ? h.id : room.players.keys().next().value;
@@ -388,6 +397,7 @@ function frAdd(c, raw) {
   if (a.out.indexOf(b.uid) >= 0) return c.err('Demande déjà envoyée à ' + b.name);
   if (a.inc.indexOf(b.uid) >= 0) return frAccept(c, b.uid);   // il t'avait déjà invité : vous devenez amis
   if (a.friends.length >= MAX_FRIENDS) return c.err('Ta liste d\'amis est pleine');
+  if (a.out.length >= MAX_REQ) return c.err('Trop de demandes en attente : annules-en une');
   if (b.inc.length >= MAX_REQ || b.friends.length >= MAX_FRIENDS) return c.err('Ce joueur ne peut plus recevoir de demandes');
   a.out.push(b.uid); b.inc.push(a.uid); saveAccounts();
   c.send({ t: 'fr_ok', m: 'Demande envoyée à ' + b.name }); sendFriends(c);
@@ -540,8 +550,9 @@ function handle(c, m, str) {
     case 'hello': {
       profile(c, m);
       const rs = m.resume && typeof m.resume === 'object' ? m.resume : null;
-      let g = rs && ghosts.get(rs.id);
-      if (!g && rs && typeof rs.tok === 'string') {           // le serveur n'a pas encore vu l'ancien socket mourir (connexion « à moitié ouverte ») : le jeton secret prouve que c'est le même joueur
+      const fresh = !c.room && !c.party && !c.uid && !c.qkeys.length;   // la reprise ne concerne qu'une connexion neuve
+      let g = fresh && rs && ghosts.get(rs.id);
+      if (fresh && !g && rs && typeof rs.tok === 'string') {           // le serveur n'a pas encore vu l'ancien socket mourir (connexion « à moitié ouverte ») : le jeton secret prouve que c'est le même joueur
         for (const o of conns) if (o !== c && o.id === rs.id && o.tok === rs.tok && o.alive) { g = o; break; }
         if (g) { g.alive = false; g.bye = true; try { g.s.destroy(); } catch (e) {} }
       }
@@ -549,7 +560,7 @@ function handle(c, m, str) {
         adopt(g, c);
         c.send({ t: 'welcome', id: c.id, on: conns.size, tok: c.tok, resumed: 1 });
         const r = c.room;
-        if (r && r.state === 'play' && !rs.on) c.send(matchMsg(r, c));   // le match a démarré pendant la coupure
+        if (r && r.state === 'play' && !r.over && !rs.on) c.send(matchMsg(r, c));   // le match a démarré pendant la coupure
         if (c.acct) { c.send({ t: 'acct', uid: c.uid, code: fmtCode(c.acct.code), name: c.acct.name }); sendFriends(c); }
         if (c.party) partyBcast(c.party);
         break;
@@ -621,6 +632,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.ico': 'image/x-icon' };
 const server = http.createServer((req, res) => {
   let p; try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch (e) { res.writeHead(400); return res.end(); }
+  if (p.indexOf('\0') >= 0) { res.writeHead(400); return res.end(); }   // fs.stat lève une exception sur un octet nul
   if (p === '/health') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('ok'); }
   if (p === '/stats') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
