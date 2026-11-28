@@ -3007,12 +3007,18 @@ function shieldGeo(){
   _shG={rim:new T.ShapeGeometry(rim),field:new T.ShapeGeometry(outline(new T.Shape(),.74)),bv:new T.PlaneGeometry(.1,.78),bh:new T.PlaneGeometry(.5,.1)};
   return _shG;
 }
-function spawnShield(c,f){
-  const G=shieldGeo(),fw=c.fwd,rt=c.right,up=c.up,sd=rnd()<.5?-1:1;
-  const mk=(g,col,op)=>{const m=new T.Mesh(g,new T.MeshBasicMaterial({color:new T.Color(col[0],col[1],col[2]),transparent:true,opacity:op,blending:T.AdditiveBlending,depthWrite:false,side:T.DoubleSide,fog:false}));m.userData.op=op;return m;};
+const _shPool=[]; /* écus réutilisés : en créer puis détruire une douzaine par seconde faisait saccader les téléphones */
+function shieldMake(){
+  const G=shieldGeo(),mk=(g,op)=>{const m=new T.Mesh(g,new T.MeshBasicMaterial({transparent:true,opacity:op,blending:T.AdditiveBlending,depthWrite:false,side:T.DoubleSide,fog:false}));m.userData.op=op;return m;};
   const grp=new T.Group(),piv=new T.Group();grp.add(piv);
-  piv.add(mk(G.rim,f.c2,.95));const fl=mk(G.field,f.c1,.42);fl.position.z=-.004;piv.add(fl);
-  const bv=mk(G.bv,f.c2,.6),bh=mk(G.bh,f.c2,.6);bv.position.set(0,0,.004);bh.position.set(0,.2,.004);piv.add(bv);piv.add(bh);
+  const rim=mk(G.rim,.95),fl=mk(G.field,.42),bv=mk(G.bv,.6),bh=mk(G.bh,.6);fl.position.z=-.004;bv.position.set(0,0,.004);bh.position.set(0,.2,.004);piv.add(rim,fl,bv,bh);
+  return grp;
+}
+function spawnShield(c,f){
+  const fw=c.fwd,rt=c.right,up=c.up,sd=rnd()<.5?-1:1;
+  const grp=_shPool.pop()||shieldMake(),piv=grp.children[0];
+  piv.children.forEach((m,i)=>{const col=i===1?f.c1:f.c2;m.material.color.setRGB(col[0],col[1],col[2]);m.material.opacity=m.userData.op;});
+  piv.rotation.y=0;
   grp.position.copy(_bfxTmp).addScaledVector(up,.35).addScaledVector(rt,(rnd()-.5)*.5);
   const bx=new T.Matrix4().makeBasis(rt,up,new T.Vector3(-fw.x,-fw.y,-fw.z));grp.quaternion.setFromRotationMatrix(bx);
   const sc0=1.15+rnd()*.35;grp.scale.setScalar(sc0);
@@ -3020,7 +3026,7 @@ function spawnShield(c,f){
   addFxObj({m:grp,sc:fxScene(),life:.75,vel:vel,g:0,upd:(o,dt,k)=>{
     piv.rotation.y=o.t*sd*5;const a=Math.pow(1-k,1.2);o.m.scale.setScalar(sc0*(.85+.55*k));
     piv.children.forEach(m=>{m.material.opacity=m.userData.op*a;});
-  },die:o=>{o.m.traverse(n=>{if(n.material)n.material.dispose();});}});
+  },die:o=>{_shPool.push(o.m);}});
 }
 function boostEmit(c,sup){
   const f=c.bfx,fw=c.fwd;
@@ -5168,6 +5174,7 @@ const GATE={on:false,
 if(window.RA_FB||window.RA_FB_ERR)CLOUD.init();else window.addEventListener('ra-fb',()=>CLOUD.init());
 /* NEWS : à CHAQUE mise à jour du jeu, on ajoute une entrée EN HAUT de cette liste (la plus récente en premier), avec sa date dans « d » */
 const NEWS=[
+  {d:'28/11/2026',t:'Correctifs en ligne',b:'Boost Boucliers allégé, badge staff vérifié par le serveur, chaque joueur ne pilote que sa voiture, et corrections sur le compte, le groupe et les amis.'},
   {d:'25/11/2026',t:'Boost Boucliers du staff',b:'Nouveau boost : des boucliers sortent de l\'arrière de ta voiture quand tu boostes. Pour l\'obtenir, gagne un match en ligne avec ou contre un membre du staff.',go:['locker','Voir le casier']},
   {d:'25/11/2026',t:'Bugatti RND + Renard croqueur',b:'Le pack Renard Néon RND a une nouvelle voiture, la Bugatti RND (hypercar large avec calandre en fer à cheval et ligne en C). Son explosion de but, « Renard croqueur », fait surgir un grand renard du but : il ouvre la gueule et croque deux fois avant de rentrer.',go:['locker','Voir le casier']},
   {d:'25/11/2026',t:'Tag CRÉATEUR',b:'Les joueurs qui ont un code créateur ont maintenant un tag CRÉATEUR : il s\'affiche à côté de leur nom sur l\'écran « Match trouvé », visible par tous les joueurs du match.'},
@@ -9720,6 +9727,7 @@ Object.assign(NET,{
     if(!NET.on||!Array.isArray(m.a))return;
     for(const e of m.a){
       const c=cars[e[0]];if(!c||!c.remote)continue;
+      if(m.from!==undefined&&m.from!==(c.nid==null||NET.gone.has(c.nid)?NET.hostId:c.nid))continue; /* chacun ne pilote que sa voiture ; les bots sont pilotés par l'hôte */
       const I=c.in,fl=e[4]|0,j=!!(fl&2);
       I.x=+e[1]||0;I.y=+e[2]||0;I.thr=+e[3]||0;I.boost=!!(fl&1);
       if((j&&!c._pj)||(fl&16))I.jumpEdge=true;

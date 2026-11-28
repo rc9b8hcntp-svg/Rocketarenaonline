@@ -17,6 +17,7 @@ const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const PUB = path.join(__dirname, 'public');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');      // comptes / amis (mettre un disque persistant en production)
 const ACC_FILE = path.join(DATA_DIR, 'accounts.json');
+const STAFF_EMAIL = 'college.maxence59@gmail.com';      // même adresse que dans le jeu et les règles Firestore
 const FB_PROJECT = process.env.FIREBASE_PROJECT_ID || 'rocketarena';        // projet Firebase du jeu (vérification des jetons de connexion)
 const MAP_LIST = ['champ', 'mann', 'neo', 'utopia', 'waste', 'urban', 'beck', 'forb', 'salty', 'aqua', 'farm'];   // ambiances de map (le client connaît les mêmes clés)
 const randomMap = () => MAP_LIST[crypto.randomInt(MAP_LIST.length)];
@@ -148,7 +149,7 @@ class Conn {
 const clean = s => String(s == null ? '' : s).replace(/[\u0000-\u001f<>&"'`]/g, '').trim().slice(0, 16);
 function cleanL(L) {
   const o = {};
-  if (L && typeof L === 'object') { let n = 0; for (const k of Object.keys(L)) { if (++n > 24) break; const v = L[k]; if (/^[a-z0-9]{1,8}$/i.test(k) && Number.isInteger(v) && v >= 0 && v < 100000) o[k] = v; } }
+  if (L && typeof L === 'object') { let n = 0; for (const k of Object.keys(L)) { if (++n > 24) break; const v = L[k]; if (k !== 'st' && /^[a-z0-9]{1,8}$/i.test(k) && Number.isInteger(v) && v >= 0 && v < 100000) o[k] = v; } }
   return o;
 }
 function profile(c, m) {
@@ -224,7 +225,7 @@ async function verifyIdToken(tok) {
   if (!crypto.verify('RSA-SHA256', Buffer.from(p[0] + '.' + p[1]), key, b64u(p[2]))) throw new Error('signature');
   const now = Math.floor(Date.now() / 1000);
   if (pl.aud !== FB_PROJECT || pl.iss !== 'https://securetoken.google.com/' + FB_PROJECT || !pl.sub || !(pl.exp > now) || pl.iat > now + 300) throw new Error('jeton refusé');
-  return { uid: String(pl.sub) };
+  return { uid: String(pl.sub), staff: pl.email_verified === true && String(pl.email || '').toLowerCase() === STAFF_EMAIL };
 }
 
 /* ---------- file d'attente : joueurs seuls ou groupes entiers (un groupe reste dans la même équipe) ---------- */
@@ -322,7 +323,7 @@ function startQueueMatch(k, size, group) {
 }
 function matchMsg(room, c) {
   const slot = [0, 0], list = [];
-  for (const o of room.players.values()) list.push({ id: o.id, name: o.name, team: o.team, slot: slot[o.team]++, L: o.L, mmr: o.mmr });
+  for (const o of room.players.values()) list.push({ id: o.id, name: o.name, team: o.team, slot: slot[o.team]++, L: o.staff ? Object.assign({}, o.L, { st: 1 }) : o.L, mmr: o.mmr });
   return { t: 'match', you: c.id, host: room.host, cfg: room.cfg, players: list, priv: room.priv, map: room.map };
 }
 function launch(room) {
@@ -339,7 +340,7 @@ function adopt(old, c) {
   }
   if (c.room) c.room.players.set(c.id, c);
   c.party = old.party; if (c.party) c.party.members.set(c.id, c);
-  c.uid = old.uid; c.acct = old.acct; if (c.uid) online.set(c.uid, c);
+  c.staff = old.staff; c.uid = old.uid; c.acct = old.acct; if (c.uid) online.set(c.uid, c);
   old.room = null; old.party = null; old.uid = null; old.acct = null;
 }
 
@@ -347,7 +348,7 @@ function adopt(old, c) {
 function leaveRoom(c) {
   const room = c.room; if (!room) return;
   c.room = null; room.players.delete(c.id);
-  if (!room.players.size) { rooms.delete(room); if (room.party) { room.party.state = 'lobby'; partyBcast(room.party); } if (c.party) partyBcast(c.party); return; }
+  if (!room.players.size) { rooms.delete(room); if (room.party && !room.over) { room.party.state = 'lobby'; partyBcast(room.party); } if (c.party) partyBcast(c.party); return; }
   if (room.host === c.id) {                                  // nouvel hôte : de préférence un joueur réellement connecté
     let h = null; for (const o of room.players.values()) { if (o.alive) { h = o; break; } }
     room.host = h ? h.id : room.players.keys().next().value;
@@ -395,6 +396,7 @@ function frAdd(c, raw) {
 function frAccept(c, uid) {
   const a = needAcct(c); if (!a) return;
   const i = a.inc.indexOf(uid), b = accounts.get(uid); if (i < 0 || !b) return c.err('Demande introuvable');
+  if (a.friends.length >= MAX_FRIENDS || b.friends.length >= MAX_FRIENDS) return c.err('Liste d\'amis pleine');
   a.inc.splice(i, 1); const j = b.out.indexOf(a.uid); if (j >= 0) b.out.splice(j, 1);
   if (a.friends.indexOf(uid) < 0) a.friends.push(uid); if (b.friends.indexOf(a.uid) < 0) b.friends.push(a.uid);
   saveAccounts(); c.send({ t: 'fr_ok', m: 'Tu es maintenant ami avec ' + b.name });
@@ -427,18 +429,17 @@ function unbind(c, silent) {
   leaveParty(c);
   if (online.get(u) === c) online.delete(u);
   if (a) for (const f of a.friends) { const o = online.get(f); if (o) o.send({ t: 'fr_st', uid: u, st: 'off' }); }
-  c.uid = null; c.acct = null; c.lastSt = null;
+  c.uid = null; c.acct = null; c.lastSt = null; c.staff = false;
   if (!silent) c.send({ t: 'acct', uid: null });
 }
 function doAuth(c, m) {
   profile(c, m);
-  if (c.authing) return;                                     // une vérification est déjà en cours pour cette connexion
-  c.authing = true;
+  const seq = c.authSeq = (c.authSeq || 0) + 1;             // seule la dernière demande compte (changement de compte, déconnexion)
   verifyIdToken(m.auth).then(u => {
-    c.authing = false;
-    if (c.alive) { try { bindAcct(c, u.uid, m.name); } catch (e) { logErr('bindAcct', e); c.send({ t: 'acct', uid: null, err: 1 }); } }
+    if (seq !== c.authSeq) return;
+    if (c.alive) { try { c.staff = u.staff; bindAcct(c, u.uid, m.name); } catch (e) { logErr('bindAcct', e); c.send({ t: 'acct', uid: null, err: 1 }); } }
   }, e => {
-    c.authing = false;
+    if (seq !== c.authSeq) return;
     if (!/format|algorithme|signature|jeton refusé|clé inconnue/.test(String(e && e.message))) logErr('auth', e);   // erreurs réseau seulement (un jeton invalide est normal)
     c.send({ t: 'acct', uid: null, err: 1 });
   });
@@ -490,6 +491,7 @@ function pAccept(c, pid) {
   if (p.members.size >= PARTY_MAX) return c.err('Le groupe est complet');
   if (c.party === p) return;
   if (c.party) leaveParty(c); else if (c.qkeys.length) unqueue(c);
+  const lead = p.members.get(p.leader); if (lead && lead.qkeys.length) unqueue(lead);   // la recherche ne comptait pas le nouveau membre
   p.inv.delete(c.uid); c.party = p; c.ptm = pickTeam(p); p.members.set(c.id, c);
   rebalanceParty(p); partyBcast(p);
 }
@@ -526,7 +528,7 @@ function handle(c, m, str) {
   if (RELAY_ALL[t] || RELAY_HOST[t]) {
     const r = c.room; if (!r || r.state !== 'play') return;
     if (RELAY_HOST[t] && c.id !== r.host) return;
-    const b = Buffer.from(str), lossy = t === 'in' || t === 'snap';     // encodé une seule fois pour tous les joueurs
+    const b = Buffer.from(t === 'in' ? JSON.stringify({ t: 'in', a: m.a, from: c.id }) : str), lossy = t === 'in' || t === 'snap';     // encodé une seule fois pour tous les joueurs
     for (const o of r.players.values()) {
       if (o === c || !o.alive) continue;
       if (lossy && o.s.writableLength > 131072) continue;    // client lent : on saute les messages périmés plutôt que de le déconnecter
@@ -557,7 +559,7 @@ function handle(c, m, str) {
     }
     case 'ping': c.send({ t: 'pong', ts: m.ts }); break;
     case 'auth': doAuth(c, m); break;
-    case 'unauth': unbind(c); break;
+    case 'unauth': c.authSeq = (c.authSeq || 0) + 1; unbind(c); break;
     case 'fr_get': sendFriends(c); break;
     case 'fr_add': frAdd(c, m.code); break;
     case 'fr_accept': frAccept(c, String(m.uid)); break;
