@@ -475,7 +475,7 @@ function pInvite(c, uid) {
   let p = c.party;
   if (p && p.state !== 'lobby') return c.err('Match en cours : invite après la partie');
   if (p && [...p.members.values()].some(m => m.uid === uid)) return c.err(nameOf(uid) + ' est déjà dans le groupe');
-  if (p && p.members.size + p.inv.size >= PARTY_MAX) return c.err('Le groupe est complet (' + PARTY_MAX + ' joueurs)');
+  if (p && !p.inv.has(uid) && p.members.size + p.inv.size >= PARTY_MAX) return c.err('Le groupe est complet (' + PARTY_MAX + ' joueurs)');
   if (!p) { p = { id: 'P' + (++nextParty), leader: c.id, members: new Map(), cfg: { mode: 'casual', size: 2, dur: 3, map: 'rand' }, inv: new Map(), state: 'lobby' }; p.members.set(c.id, c); c.party = p; c.ptm = 0; parties.add(p); }
   p.inv.set(uid, Date.now() + INVITE_S * 1000);
   t.send({ t: 'p_inv', pid: p.id, uid: a.uid, name: a.name, ttl: INVITE_S });

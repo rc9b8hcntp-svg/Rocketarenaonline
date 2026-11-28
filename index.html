@@ -4309,7 +4309,8 @@ function passSync(){
 /* daily / boutique / caisses */
 function claimDaily(){
   const today=todayKey();if(SV.daily.last===today)return 0;
-  const y=new Date(Date.now()-864e5),yk=y.getFullYear()+'-'+(y.getMonth()+1)+'-'+y.getDate();
+  const y=new Date();y.setDate(y.getDate()-1); /* « moins 24 h » se trompait au changement d'heure */
+  const yk=y.getFullYear()+'-'+(y.getMonth()+1)+'-'+y.getDate();
   SV.daily.streak=SV.daily.last===yk?Math.min(7,SV.daily.streak+1):1;SV.daily.last=today;
   const r=150+SV.daily.streak*50;SV.credits+=r;saveSV();return r;
 }
@@ -5174,6 +5175,7 @@ const GATE={on:false,
 if(window.RA_FB||window.RA_FB_ERR)CLOUD.init();else window.addEventListener('ra-fb',()=>CLOUD.init());
 /* NEWS : à CHAQUE mise à jour du jeu, on ajoute une entrée EN HAUT de cette liste (la plus récente en premier), avec sa date dans « d » */
 const NEWS=[
+  {d:'28/11/2026',t:'Nouveaux correctifs',b:'Menu pause fermé à la fin du match, série quotidienne conservée au changement d\'heure, passage propre du hors ligne au match en ligne et relance d\'invitation.'},
   {d:'28/11/2026',t:'Correctifs en ligne',b:'Boost Boucliers allégé, badge staff vérifié par le serveur, chaque joueur ne pilote que sa voiture, et corrections sur le compte, le groupe et les amis.'},
   {d:'25/11/2026',t:'Boost Boucliers du staff',b:'Nouveau boost : des boucliers sortent de l\'arrière de ta voiture quand tu boostes. Pour l\'obtenir, gagne un match en ligne avec ou contre un membre du staff.',go:['locker','Voir le casier']},
   {d:'25/11/2026',t:'Bugatti RND + Renard croqueur',b:'Le pack Renard Néon RND a une nouvelle voiture, la Bugatti RND (hypercar large avec calandre en fer à cheval et ligne en C). Son explosion de but, « Renard croqueur », fait surgir un grand renard du but : il ouvre la gueule et croque deux fois avant de rentrer.',go:['locker','Voir le casier']},
@@ -8833,6 +8835,7 @@ function endMatch(){
     lgFinish(win);h+='<div class="sub">'+lgSummary(win)+'</div>';$('again').textContent='Continuer';
   }else $('again').textContent='Rejouer';
   $('endRew').innerHTML=h;
+  el.pause.classList.remove('show'); /* en ligne, le menu pause ouvert restait par-dessus les résultats */
   el.end.classList.add('show');el.touch.classList.add('hide');
 }
 
@@ -9691,6 +9694,7 @@ Object.assign(NET,{
     clearInterval(NET.qiv);
     NET.roster=m.players.map(p=>({id:p.id,name:p.name,team:p.team,slot:p.slot,L:p.L,mmr:p.mmr,me:p.id===m.you,cr:!!(p.L&&p.L.cr===1)||(p.id===m.you&&!!SV.iscr),st:!!(p.L&&p.L.st===1)||(p.id===m.you&&BAN.isStaff())}));
     const me=NET.roster.find(p=>p.me);if(!me)return;
+    if(phase!=='menu')toMenu(true); /* un match hors ligne encore en cours ne doit pas envoyer ses données au match en ligne */
     NET.me=m.you;NET.hostId=m.host;NET.host=m.host===m.you;NET.gone=new Set();NET.ended=0;NET.kind=m.priv?'room':'queue';NET.tIn=NET.tSn=0;
     setCfg(m.cfg.mode);cfg.size=m.cfg.size;cfg.dur=m.cfg.dur;cfg.team=me.team;cfg.party=[];cfg.partySk=[];cfg.lg=false;cfg.mut=null;
     CM.pend=null;
